@@ -324,9 +324,15 @@ def cmd_doctor():
 
     try:
         from llmcore import reload_mykeys
+        from model_profiles import format_model_profile_summary, summarize_model_profiles
         mykeys, _changed = reload_mykeys()
-        llm_like = [k for k, v in mykeys.items() if isinstance(v, dict) and ("model" in v or "apikey" in v or "api_key" in v)]
-        statuses.append(_doctor_item("PASS", "model profiles", f"{len(llm_like)} profile(s) loaded; values hidden"))
+        profiles = summarize_model_profiles(mykeys)
+        detail = f"{len(profiles)} profile(s) loaded; secrets hidden"
+        statuses.append(_doctor_item("PASS", "model profiles", detail))
+        for idx, profile in enumerate(profiles[:5], start=1):
+            statuses.append(_doctor_item("PASS", f"profile {idx}", format_model_profile_summary(profile)))
+        if len(profiles) > 5:
+            statuses.append(_doctor_item("PASS", "profile more", f"{len(profiles) - 5} additional profile(s) hidden"))
     except Exception as exc:
         statuses.append(_doctor_item("WARN", "model profiles", f"could not load config: {exc}"))
 
