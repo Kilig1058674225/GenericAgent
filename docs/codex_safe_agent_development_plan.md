@@ -146,6 +146,7 @@ Run:
 
 ```powershell
 git status --short
+.\.venv\Scripts\python.exe -m ga_cli verify
 .\.venv\Scripts\python.exe -c "import agent_loop; print('agent_loop import OK')"
 .\.venv\Scripts\python.exe -c "from agentmain import GeneraticAgent; a=GeneraticAgent(); print(a.list_llms())"
 ```

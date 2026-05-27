@@ -140,6 +140,12 @@ COMMANDS = {
         "cmd": None,
         "internal": True,
     },
+    "verify": {
+        "help": "运行提交前验证套件",
+        "desc": "运行单测、doctor、导入 smoke、diff 检查和已配置密钥扫描",
+        "cmd": None,
+        "internal": True,
+    },
 }
 
 
@@ -533,6 +539,124 @@ def cmd_snapshots(argv=None):
     print()
 
 
+def _verify_tail(text, limit=1200):
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _run_verify_step(name, cmd, timeout=120):
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        return {
+            "name": name,
+            "ok": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": result.stdout or "",
+            "stderr": result.stderr or "",
+        }
+    except Exception as exc:
+        return {"name": name, "ok": False, "returncode": 1, "stdout": "", "stderr": str(exc)}
+
+
+def cmd_verify(argv=None):
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="ga verify",
+        description="运行提交前验证套件",
+    )
+    parser.add_argument("--quick", action="store_true", help="跳过完整单元测试")
+    parser.add_argument("--json", action="store_true", help="输出 JSON 结果")
+    parsed = parser.parse_args(argv or [])
+
+    python = sys.executable
+    steps = [
+        (
+            "py_compile",
+            [
+                python,
+                "-m",
+                "py_compile",
+                "agent_loop.py",
+                "llmcore.py",
+                "ga_cli/cli.py",
+                "safety_policy.py",
+                "audit_view.py",
+                "model_profiles.py",
+                "verify_checks.py",
+                "workspace_guard.py",
+                "skill_registry.py",
+            ],
+            60,
+        ),
+    ]
+    if not parsed.quick:
+        steps.append(("unittest", [python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"], 180))
+    steps.extend(
+        [
+            ("doctor", [python, "-m", "ga_cli", "doctor"], 120),
+            ("import smoke", [python, "-c", "import agent_loop; import agentmain; print('imports ok')"], 60),
+            (
+                "agent init smoke",
+                [
+                    python,
+                    "-c",
+                    "from agentmain import GeneraticAgent; a=GeneraticAgent(); assert a.list_llms(); print('llm profiles ok')",
+                ],
+                120,
+            ),
+            ("skills validate", [python, "-m", "ga_cli", "skills", "validate"], 60),
+            ("git diff check", ["git", "diff", "--check"], 60),
+        ]
+    )
+
+    results = [_run_verify_step(name, cmd, timeout) for name, cmd, timeout in steps]
+    try:
+        from verify_checks import scan_candidate_files_for_configured_secrets
+
+        secret_matches = scan_candidate_files_for_configured_secrets(PROJECT_DIR)
+        results.append(
+            {
+                "name": "configured secret scan",
+                "ok": not secret_matches,
+                "returncode": 0 if not secret_matches else 1,
+                "stdout": "" if secret_matches else "no configured secrets found in git candidate files",
+                "stderr": json.dumps(secret_matches, ensure_ascii=True),
+            }
+        )
+    except Exception as exc:
+        results.append({"name": "configured secret scan", "ok": False, "returncode": 1, "stdout": "", "stderr": str(exc)})
+
+    if parsed.json:
+        print(json.dumps(results, ensure_ascii=True, indent=2))
+    else:
+        print("\nGenericAgent verify\n")
+        for result in results:
+            status = "PASS" if result["ok"] else "FAIL"
+            print(f"[{status:4s}] {result['name']}")
+            if not result["ok"]:
+                detail = _verify_tail((result.get("stdout") or "") + "\n" + (result.get("stderr") or ""))
+                if detail:
+                    print(textwrap.indent(detail, "       "))
+        print()
+        if all(result["ok"] for result in results):
+            print("Verify result: PASS - ready for commit/push.")
+        else:
+            print("Verify result: FAIL - fix failed checks above.")
+    if not all(result["ok"] for result in results):
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ga",
@@ -549,6 +673,7 @@ def main():
               ga launch            启动 webview 桌面壳
               ga list              列出所有命令
               ga doctor            运行环境自诊断
+              ga verify            运行提交前验证套件
               ga audit             查看最近审计事件
               ga skills sync       更新技能注册表
               ga snapshots list    查看最近文件快照
@@ -598,6 +723,10 @@ def main():
 
     if cmd == "snapshots":
         cmd_snapshots(sys.argv[2:])
+        return
+
+    if cmd == "verify":
+        cmd_verify(sys.argv[2:])
         return
 
     if cmd not in COMMANDS:
