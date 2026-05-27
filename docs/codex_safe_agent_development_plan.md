@@ -24,8 +24,19 @@ Remotes:
 ```
 
 - Open `http://127.0.0.1:18510`.
-- Local model config should stay in ignored `mykey.py`.
+- Local model config can stay in ignored `mykey.py`; deployment can also use environment variables without writing secrets to disk.
 - Do not commit API keys, cookies, model response logs, memory generated during experiments, or local task outputs.
+
+Environment-only model config for OpenAI-compatible endpoints:
+
+```powershell
+$env:GENERICAGENT_API_BASE="https://api.openai.com/v1"
+$env:GENERICAGENT_API_KEY="<secret>"
+$env:GENERICAGENT_MODEL="<model>"
+.\.venv\Scripts\python.exe -m ga_cli doctor
+```
+
+Optional tuning env vars include `GENERICAGENT_NAME`, `GENERICAGENT_API_MODE`, `GENERICAGENT_REASONING_EFFORT`, `GENERICAGENT_MAX_TOKENS`, `GENERICAGENT_TEMPERATURE`, and `GENERICAGENT_CONTEXT_WIN`.
 
 ## Phase 1: Safety Foundation
 

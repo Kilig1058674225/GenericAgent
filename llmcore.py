@@ -5,6 +5,100 @@ _RESP_CACHE_KEY = str(uuid.uuid4())
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path: sys.path.append(_ROOT)
 
+_ENV_MYKEY_SOURCE = '<env:GENERICAGENT_*>'
+_ENV_CONFIG_NAME = 'native_oai_env_config'
+_ENV_CONFIG_VARS = (
+    'GENERICAGENT_API_KEY',
+    'GENERICAGENT_API_BASE',
+    'GENERICAGENT_MODEL',
+    'GENERICAGENT_NAME',
+    'GENERICAGENT_API_MODE',
+    'GENERICAGENT_REASONING_EFFORT',
+    'GENERICAGENT_SERVICE_TIER',
+    'GENERICAGENT_MAX_TOKENS',
+    'GENERICAGENT_TEMPERATURE',
+    'GENERICAGENT_CONTEXT_WIN',
+    'GENERICAGENT_STREAM',
+    'GENERICAGENT_VERIFY',
+    'GENERICAGENT_TIMEOUT',
+    'GENERICAGENT_READ_TIMEOUT',
+    'GENERICAGENT_MAX_RETRIES',
+)
+
+def _env_signature():
+    return tuple(os.environ.get(k, '') for k in _ENV_CONFIG_VARS)
+
+def _env_int(name):
+    value = os.environ.get(name)
+    if value in (None, ''): return None
+    try: return int(value)
+    except ValueError:
+        print(f'[WARN] Invalid {name}={value!r}, ignored.')
+        return None
+
+def _env_float(name):
+    value = os.environ.get(name)
+    if value in (None, ''): return None
+    try: return float(value)
+    except ValueError:
+        print(f'[WARN] Invalid {name}={value!r}, ignored.')
+        return None
+
+def _env_bool(name):
+    value = os.environ.get(name)
+    if value in (None, ''): return None
+    normalized = value.strip().lower()
+    if normalized in {'1', 'true', 'yes', 'on'}: return True
+    if normalized in {'0', 'false', 'no', 'off'}: return False
+    print(f'[WARN] Invalid {name}={value!r}, ignored.')
+    return None
+
+def _load_env_mykeys():
+    api_key = os.environ.get('GENERICAGENT_API_KEY')
+    model = os.environ.get('GENERICAGENT_MODEL')
+    if not api_key or not model: return None
+    cfg = {
+        'name': os.environ.get('GENERICAGENT_NAME') or f'env-{model}',
+        'apikey': api_key,
+        'apibase': os.environ.get('GENERICAGENT_API_BASE') or 'https://api.openai.com/v1',
+        'model': model,
+    }
+    optional_strings = {
+        'api_mode': 'GENERICAGENT_API_MODE',
+        'reasoning_effort': 'GENERICAGENT_REASONING_EFFORT',
+        'service_tier': 'GENERICAGENT_SERVICE_TIER',
+    }
+    for key, env_name in optional_strings.items():
+        if os.environ.get(env_name): cfg[key] = os.environ[env_name]
+    optional_ints = {
+        'max_tokens': 'GENERICAGENT_MAX_TOKENS',
+        'context_win': 'GENERICAGENT_CONTEXT_WIN',
+        'timeout': 'GENERICAGENT_TIMEOUT',
+        'read_timeout': 'GENERICAGENT_READ_TIMEOUT',
+        'max_retries': 'GENERICAGENT_MAX_RETRIES',
+    }
+    for key, env_name in optional_ints.items():
+        value = _env_int(env_name)
+        if value is not None: cfg[key] = value
+    temperature = _env_float('GENERICAGENT_TEMPERATURE')
+    if temperature is not None: cfg['temperature'] = temperature
+    for key, env_name in {'stream': 'GENERICAGENT_STREAM', 'verify': 'GENERICAGENT_VERIFY'}.items():
+        value = _env_bool(env_name)
+        if value is not None: cfg[key] = value
+    return {_ENV_CONFIG_NAME: cfg}
+
+def _local_mykey_file_exists():
+    return any(os.path.exists(os.path.join(_ROOT, name)) for name in ('mykey.py', 'mykey.json'))
+
+def _source_signature():
+    if _mykey_path == _ENV_MYKEY_SOURCE:
+        if _local_mykey_file_exists(): return None
+        return ('env', _env_signature())
+    if _mykey_path:
+        try: return ('file', os.stat(_mykey_path).st_mtime_ns)
+        except OSError: return None
+    return None
+
 def _load_mykeys():
     global _mykey_path
     try:
@@ -16,16 +110,21 @@ def _load_mykeys():
     except SyntaxError as e:
         raise Exception(f'[ERROR] mykey.py has syntax error: {e}') from e
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mykey.json')
-    if not os.path.exists(p): raise Exception('[ERROR] mykey.py not found in sys.path and mykey.json not found. Run "python configure_mykey.py" or copy mykey_template.py to mykey.py and fill in your keys.')
+    if not os.path.exists(p):
+        env_mykeys = _load_env_mykeys()
+        if env_mykeys:
+            _mykey_path = _ENV_MYKEY_SOURCE
+            return env_mykeys
+        raise Exception('[ERROR] mykey.py not found in sys.path, mykey.json not found, and GENERICAGENT_API_KEY+GENERICAGENT_MODEL env not set. Run "python configure_mykey.py", copy mykey_template.py to mykey.py, or export env-based model config.')
     with open(_mykey_path := p, encoding='utf-8') as f: return json.load(f)
 
 _mykey_path = _mykey_mtime = None
 def reload_mykeys():
     global _mykey_mtime
     try:
-        mt = os.stat(_mykey_path).st_mtime_ns if _mykey_path else -1
-        if mt == _mykey_mtime: return globals().get('mykeys', {}), False
-        mk = _load_mykeys(); _mykey_mtime = os.stat(_mykey_path).st_mtime_ns
+        sig = _source_signature()
+        if sig is not None and sig == _mykey_mtime: return globals().get('mykeys', {}), False
+        mk = _load_mykeys(); _mykey_mtime = _source_signature()
         print(f'[Info] Load mykeys from {_mykey_path}')
         globals().update(mykeys=mk)
         return mk, True
