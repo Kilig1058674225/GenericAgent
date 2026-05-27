@@ -13,6 +13,7 @@ sys.path.append(os.path.abspath(script_dir))
 
 import streamlit as st
 import time, json, re, threading, queue
+from audit_view import audit_event_row
 from agentmain import GeneraticAgent
 import chatapp_common  # activate /continue command (monkey patches GeneraticAgent)
 from continue_cmd import handle_frontend_command, reset_conversation, list_sessions, extract_ui_messages
@@ -92,6 +93,20 @@ def render_sidebar():
             if ctx.get('exit_reason'): _pet_req('state=idle')
         agent._turn_end_hooks['pet'] = _pet_hook
         st.toast("Desktop pet started")
+
+    with st.expander("Audit timeline", expanded=False):
+        try:
+            from safety_policy import iter_audit_events
+            events = iter_audit_events(limit=12)
+            if events:
+                for event in events:
+                    row = audit_event_row(event)
+                    st.caption(f"{row['time']} | {row['event']}")
+                    st.text(row["summary"] or "-")
+            else:
+                st.caption("No audit events yet.")
+        except Exception as e:
+            st.caption(f"Audit unavailable: {e}")
     
     if LANG == 'zh':
         if st.button('🎯 给我找点事做'):

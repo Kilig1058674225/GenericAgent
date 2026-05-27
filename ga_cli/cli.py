@@ -377,19 +377,6 @@ def cmd_doctor():
     print("Doctor result: PASS - local environment looks healthy.")
 
 
-def _summarize_audit_event(event):
-    name = event.get("event", "")
-    if name == "policy_decision":
-        return f"{event.get('tool_name', '?')} {event.get('decision', '?')} {event.get('risk', '?')}"
-    if name in {"tool_start", "tool_end"}:
-        return f"{event.get('tool_name', '?')} turn={event.get('turn', '?')}"
-    if name in {"turn_start", "turn_end", "llm_start", "llm_end"}:
-        return f"turn={event.get('turn', '?')}"
-    if name in {"agent_run_start", "agent_run_end"}:
-        return f"run={event.get('run_id', '?')}"
-    return ""
-
-
 def cmd_audit(argv=None):
     import json
 
@@ -404,6 +391,7 @@ def cmd_audit(argv=None):
 
     if PROJECT_DIR not in sys.path:
         sys.path.insert(0, PROJECT_DIR)
+    from audit_view import summarize_audit_event
     from safety_policy import iter_audit_events
 
     events = iter_audit_events(limit=parsed.limit, event=parsed.event)
@@ -420,7 +408,7 @@ def cmd_audit(argv=None):
     for item in events:
         ts = str(item.get("timestamp", ""))[:25]
         event_name = str(item.get("event", ""))[:20]
-        summary = _summarize_audit_event(item)
+        summary = summarize_audit_event(item)
         print(f"  {ts:25s}  {event_name:20s}  {summary}")
     print()
 

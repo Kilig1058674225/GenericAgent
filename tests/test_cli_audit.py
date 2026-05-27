@@ -7,11 +7,32 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from ga_cli.cli import cmd_audit, cmd_skills, cmd_snapshots
+from audit_view import audit_event_row, summarize_audit_event
 from safety_policy import write_audit_event
 from workspace_guard import create_file_snapshot
 
 
 class CliAuditTests(unittest.TestCase):
+    def test_audit_view_summarizes_events_for_cli_and_ui(self):
+        event = {
+            "timestamp": "2026-05-28T12:34:56+00:00",
+            "event": "policy_decision",
+            "tool_name": "code_run",
+            "decision": "block",
+            "risk": "critical",
+            "executed": False,
+        }
+
+        self.assertEqual(summarize_audit_event(event), "code_run block critical executed=False")
+        self.assertEqual(
+            audit_event_row(event),
+            {
+                "time": "2026-05-28 12:34:56",
+                "event": "policy_decision",
+                "summary": "code_run block critical executed=False",
+            },
+        )
+
     def test_cmd_audit_outputs_text_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"GA_AUDIT_DIR": tmpdir}, clear=False):
