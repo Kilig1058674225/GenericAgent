@@ -15,7 +15,9 @@ from safety_policy import (
     MODE_ENFORCE,
     MODE_OBSERVE,
     classify_tool_call,
+    iter_audit_events,
     redact_data,
+    write_audit_event,
     write_policy_audit,
 )
 
@@ -94,20 +96,29 @@ class SafetyPolicyTests(unittest.TestCase):
     def test_audit_log_is_jsonl_and_redacted(self):
         raw_secret = "sk-auditsecret1234567890"
         with tempfile.TemporaryDirectory() as tmpdir:
-            original_dir = safety_policy.AUDIT_DIR
-            safety_policy.AUDIT_DIR = Path(tmpdir)
-            try:
+            with patch.dict(os.environ, {"GA_AUDIT_DIR": tmpdir}, clear=False):
                 decision = classify_tool_call("web_scan", {"apikey": raw_secret}, handler=None)
                 path = write_policy_audit(decision, {"apikey": raw_secret, "query": "hello"}, executed=True)
                 self.assertIsNotNone(path)
                 content = Path(path).read_text(encoding="utf-8")
-            finally:
-                safety_policy.AUDIT_DIR = original_dir
 
         self.assertNotIn(raw_secret, content)
         event = json.loads(content.strip())
         self.assertEqual(event["event"], "policy_decision")
         self.assertEqual(event["args"]["apikey"], "[REDACTED]")
+
+    def test_generic_audit_events_are_filtered_newest_first_and_clipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"GA_AUDIT_DIR": tmpdir}, clear=False):
+                write_audit_event("first", {"message": "old"})
+                write_audit_event("second", {"message": "x" * 1500})
+                write_audit_event("second", {"message": "new"})
+                newest = iter_audit_events(limit=2)
+                filtered = iter_audit_events(limit=5, event="second")
+
+        self.assertEqual([item["event"] for item in newest], ["second", "second"])
+        self.assertEqual([item["message"] for item in filtered][:1], ["new"])
+        self.assertIn("[truncated", filtered[1]["message"])
 
     def test_dispatch_executes_in_observe_mode(self):
         handler = DummyHandler(safety_policy.PROJECT_ROOT / "temp")
@@ -130,6 +141,20 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertTrue(outcome.should_exit)
         self.assertEqual(outcome.data["status"], "INTERRUPT")
         self.assertEqual(outcome.data["intent"], "HUMAN_CONFIRMATION_REQUIRED")
+
+    def test_local_audit_plugin_writes_hook_events(self):
+        from plugins import local_audit
+
+        handler = DummyHandler(safety_policy.PROJECT_ROOT / "temp")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"GA_AUDIT_DIR": tmpdir}, clear=False):
+                local_audit._agent_before({"handler": handler, "user_input": "hello", "max_turns": 1})
+                local_audit._tool_before({"handler": handler, "tool_name": "file_read", "args": {"path": "notes.txt"}})
+                events = iter_audit_events(limit=5)
+
+        names = [event["event"] for event in events]
+        self.assertIn("agent_run_start", names)
+        self.assertIn("tool_start", names)
 
 
 if __name__ == "__main__":

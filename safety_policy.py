@@ -13,6 +13,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 AUDIT_DIR = PROJECT_ROOT / "temp" / "runs"
+AUDIT_EVENT_LIMIT = 1000
 
 DECISION_ALLOW = "allow"
 DECISION_CONFIRM = "require_confirmation"
@@ -253,9 +254,83 @@ def redact_data(data: Any) -> Any:
     return data
 
 
+def get_audit_dir() -> Path:
+    override = os.environ.get("GA_AUDIT_DIR")
+    return Path(override).expanduser() if override else AUDIT_DIR
+
+
 def audit_log_path(now: datetime | None = None) -> Path:
     now = now or datetime.now(timezone.utc)
-    return AUDIT_DIR / f"audit-{now.strftime('%Y%m%d')}.jsonl"
+    return get_audit_dir() / f"audit-{now.strftime('%Y%m%d')}.jsonl"
+
+
+def _clip_data(data: Any, max_string: int = AUDIT_EVENT_LIMIT) -> Any:
+    if isinstance(data, str):
+        if len(data) <= max_string:
+            return data
+        head = max_string // 2
+        tail = max_string - head
+        return f"{data[:head]}\n...[truncated {len(data) - max_string} chars]...\n{data[-tail:]}"
+    if isinstance(data, dict):
+        return {str(key): _clip_data(value, max_string=max_string) for key, value in data.items()}
+    if isinstance(data, list):
+        return [_clip_data(item, max_string=max_string) for item in data]
+    if isinstance(data, tuple):
+        return tuple(_clip_data(item, max_string=max_string) for item in data)
+    return data
+
+
+def write_audit_event(event: str, payload: dict[str, Any] | None = None, *, now: datetime | None = None) -> Path | None:
+    """Append a sanitized generic audit event to temp/runs/*.jsonl."""
+    try:
+        event_time = now or datetime.now(timezone.utc)
+        audit_dir = get_audit_dir()
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": event_time.isoformat(),
+            "event": event,
+        }
+        if payload:
+            record.update(redact_data(_clip_data(payload)))
+        path = audit_log_path(event_time)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        return path
+    except Exception:
+        return None
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    events = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    events.append({"timestamp": "", "event": "audit_parse_error", "path": str(path), "line": redact_text(line[:500])})
+    except OSError:
+        return []
+    return events
+
+
+def iter_audit_events(limit: int = 20, event: str | None = None) -> list[dict[str, Any]]:
+    """Return newest audit events first."""
+    limit = max(1, int(limit or 20))
+    events: list[dict[str, Any]] = []
+    for path in sorted(get_audit_dir().glob("audit-*.jsonl"), reverse=True):
+        for item in reversed(_read_jsonl(path)):
+            if event and item.get("event") != event:
+                continue
+            item = dict(item)
+            item.setdefault("_path", str(path))
+            events.append(item)
+            if len(events) >= limit:
+                return events
+    return events
 
 
 def write_policy_audit(
@@ -271,27 +346,18 @@ def write_policy_audit(
 
     Audit failures should never break agent execution.
     """
-    try:
-        AUDIT_DIR.mkdir(parents=True, exist_ok=True)
-        event = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event": "policy_decision",
-            "tool_name": decision.tool_name,
-            "category": decision.category,
-            "risk": decision.risk,
-            "decision": decision.decision,
-            "mode": decision.mode,
-            "reason": decision.reason,
-            "index": index,
-            "tool_num": tool_num,
-            "executed": executed,
-            "args": redact_data(args or {}),
-        }
-        if extra:
-            event["extra"] = redact_data(extra)
-        path = audit_log_path()
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
-        return path
-    except Exception:
-        return None
+    payload = {
+        "tool_name": decision.tool_name,
+        "category": decision.category,
+        "risk": decision.risk,
+        "decision": decision.decision,
+        "mode": decision.mode,
+        "reason": decision.reason,
+        "index": index,
+        "tool_num": tool_num,
+        "executed": executed,
+        "args": redact_data(args or {}),
+    }
+    if extra:
+        payload["extra"] = redact_data(extra)
+    return write_audit_event("policy_decision", payload)

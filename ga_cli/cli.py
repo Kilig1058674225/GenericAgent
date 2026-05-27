@@ -121,6 +121,12 @@ COMMANDS = {
         "cmd": None,
         "internal": True,
     },
+    "audit": {
+        "help": "查看最近审计事件",
+        "desc": "读取 temp/runs 下的 JSONL 审计日志，可按事件名过滤",
+        "cmd": None,
+        "internal": True,
+    },
 }
 
 
@@ -338,6 +344,54 @@ def cmd_doctor():
     print("Doctor result: PASS - local environment looks healthy.")
 
 
+def _summarize_audit_event(event):
+    name = event.get("event", "")
+    if name == "policy_decision":
+        return f"{event.get('tool_name', '?')} {event.get('decision', '?')} {event.get('risk', '?')}"
+    if name in {"tool_start", "tool_end"}:
+        return f"{event.get('tool_name', '?')} turn={event.get('turn', '?')}"
+    if name in {"turn_start", "turn_end", "llm_start", "llm_end"}:
+        return f"turn={event.get('turn', '?')}"
+    if name in {"agent_run_start", "agent_run_end"}:
+        return f"run={event.get('run_id', '?')}"
+    return ""
+
+
+def cmd_audit(argv=None):
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="ga audit",
+        description="查看本地 JSONL 审计日志",
+    )
+    parser.add_argument("-n", "--limit", type=int, default=20, help="显示最近 N 条事件")
+    parser.add_argument("--event", help="只显示指定事件名，例如 policy_decision")
+    parser.add_argument("--json", action="store_true", help="输出 JSON 数组")
+    parsed = parser.parse_args(argv or [])
+
+    if PROJECT_DIR not in sys.path:
+        sys.path.insert(0, PROJECT_DIR)
+    from safety_policy import iter_audit_events
+
+    events = iter_audit_events(limit=parsed.limit, event=parsed.event)
+    if parsed.json:
+        print(json.dumps(events, ensure_ascii=False, indent=2))
+        return
+    if not events:
+        print("No audit events found.")
+        return
+
+    print()
+    print(f"  {'时间':25s}  {'事件':20s}  {'摘要'}")
+    print(f"  {'━'*25}  {'━'*20}  {'━'*45}")
+    for item in events:
+        ts = str(item.get("timestamp", ""))[:25]
+        event_name = str(item.get("event", ""))[:20]
+        summary = _summarize_audit_event(item)
+        print(f"  {ts:25s}  {event_name:20s}  {summary}")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ga",
@@ -354,6 +408,7 @@ def main():
               ga launch            启动 webview 桌面壳
               ga list              列出所有命令
               ga doctor            运行环境自诊断
+              ga audit             查看最近审计事件
         """),
     )
     parser.add_argument("command", nargs="?", help="命令名")
@@ -388,6 +443,10 @@ def main():
 
     if cmd == "doctor":
         cmd_doctor()
+        return
+
+    if cmd == "audit":
+        cmd_audit(sys.argv[2:])
         return
 
     if cmd not in COMMANDS:
