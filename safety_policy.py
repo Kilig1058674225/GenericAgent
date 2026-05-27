@@ -80,6 +80,10 @@ class PolicyDecision:
 
     @property
     def blocks_execution(self) -> bool:
+        if self.mode == MODE_OFF:
+            return False
+        if self.decision == DECISION_BLOCK and self.risk == RISK_CRITICAL:
+            return True
         return self.mode == MODE_ENFORCE and self.decision in {DECISION_BLOCK, DECISION_CONFIRM}
 
     @property

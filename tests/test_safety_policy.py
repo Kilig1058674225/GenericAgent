@@ -50,8 +50,8 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertTrue(decision.blocks_execution)
         self.assertTrue(decision.needs_confirmation)
 
-    def test_payment_like_action_is_blocked_by_default(self):
-        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_ENFORCE}, clear=False):
+    def test_payment_like_action_is_blocked_by_default_even_in_observe(self):
+        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_OBSERVE}, clear=False):
             decision = classify_tool_call("web_execute_js", {"script": "click checkout and pay"}, handler=None)
 
         self.assertEqual(decision.decision, DECISION_BLOCK)
@@ -65,7 +65,7 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertEqual(decision.decision, DECISION_BLOCK)
         self.assertEqual(decision.category, "payment_or_purchase")
 
-    def test_destructive_command_is_block_in_enforce_but_observed_only_in_observe(self):
+    def test_destructive_command_is_blocked_by_default_even_in_observe(self):
         args = {"type": "powershell", "code": "git reset --hard"}
 
         with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_OBSERVE}, clear=False):
@@ -74,9 +74,16 @@ class SafetyPolicyTests(unittest.TestCase):
             enforced = classify_tool_call("code_run", args, handler=None)
 
         self.assertEqual(observed.decision, DECISION_BLOCK)
-        self.assertFalse(observed.blocks_execution)
+        self.assertTrue(observed.blocks_execution)
         self.assertEqual(enforced.decision, DECISION_BLOCK)
         self.assertTrue(enforced.blocks_execution)
+
+    def test_regular_code_execution_is_observed_only_in_observe(self):
+        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_OBSERVE}, clear=False):
+            decision = classify_tool_call("code_run", {"type": "python", "code": "print(1)"}, handler=None)
+
+        self.assertEqual(decision.decision, DECISION_CONFIRM)
+        self.assertFalse(decision.blocks_execution)
 
     def test_redaction_handles_secret_keys_and_values(self):
         raw_secret = "sk-testsecret1234567890"

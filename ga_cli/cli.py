@@ -315,7 +315,10 @@ def cmd_doctor():
 
     policy_mode = os.environ.get("GA_POLICY_MODE", "observe").strip().lower()
     if policy_mode in {"off", "observe", "enforce"}:
-        statuses.append(_doctor_item("PASS", "policy mode", policy_mode))
+        detail = policy_mode
+        if policy_mode == "observe":
+            detail += " (critical blocks still enforced)"
+        statuses.append(_doctor_item("PASS", "policy mode", detail))
     else:
         statuses.append(_doctor_item("WARN", "policy mode", f"invalid {policy_mode!r}; will fall back to observe"))
 
