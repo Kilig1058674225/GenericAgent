@@ -72,7 +72,8 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": initial_user_content if initial_user_content is not None else user_input}
     ]
-    turn = 0;  handler.max_turns = max_turns
+    turn = 0; response = None; tool_calls = []; tool_results = []; next_prompt = ''; exit_reason = {}
+    handler.max_turns = max_turns
     _hook('agent_before', locals())
     while turn < handler.max_turns:
         turn += 1; turnstr = f'LLM Running (Turn {turn}) ...'
@@ -97,7 +98,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
                           for tc in response.tool_calls]
        
-        tool_results = []; next_prompts = set(); exit_reason = {}
+        tool_results = []; next_prompts = set(); exit_reason = {}; final_turn = False
         for ii, tc in enumerate(tool_calls):
             tool_name, args, tid = tc['tool_name'], tc['args'], tc.get('id', '')
             if tool_name == 'no_tool': pass
@@ -124,14 +125,20 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
                 tool_results.append({'tool_use_id': tid, 'content': datastr})
             next_prompts.add(outcome.next_prompt)
         if len(next_prompts) == 0 or exit_reason:
-            if len(handler._done_hooks) == 0 or exit_reason.get('result', '') == 'EXITED': break
-            next_prompts.add(handler._done_hooks.pop(0))
+            if len(handler._done_hooks) == 0 or exit_reason.get('result', '') == 'EXITED':
+                final_turn = True
+            else:
+                next_prompts.add(handler._done_hooks.pop(0))
+        if not exit_reason and turn >= handler.max_turns:
+            exit_reason = {'result': 'MAX_TURNS_EXCEEDED'}
+            final_turn = True
         next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
         _hook('turn_after', locals())
+        if final_turn: break
         messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
-    if exit_reason: handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
+    if not exit_reason: exit_reason = {'result': 'MAX_TURNS_EXCEEDED'}
     _hook('agent_after', locals())
-    return exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}
+    return exit_reason
 
 def _clean_content(text):
     if not text: return ''
