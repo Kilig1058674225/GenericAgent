@@ -12,6 +12,8 @@ class StepOutcome:
     data: Any
     next_prompt: Optional[str] = None
     should_exit: bool = False
+def _exception_data(exc):
+    return {"type": type(exc).__name__, "message": str(exc)[:1000]}
 def try_call_generator(func, *args, **kwargs):
     ret = func(*args, **kwargs)
     if hasattr(ret, '__iter__') and not isinstance(ret, (str, bytes, dict, list)): ret = yield from ret
@@ -47,9 +49,15 @@ class BaseHandler:
         if hasattr(self, method_name):
             args['_index'] = index; args['_tool_num'] = tool_num
             _hook('tool_before', locals())
-            ret = yield from try_call_generator(getattr(self, method_name), args, response)
-            _hook('tool_after', locals())
-            return ret
+            ret = None; error = None
+            try:
+                ret = yield from try_call_generator(getattr(self, method_name), args, response)
+                return ret
+            except Exception as exc:
+                error = _exception_data(exc)
+                raise
+            finally:
+                _hook('tool_after', locals())
         elif tool_name == 'bad_json': return StepOutcome(None, next_prompt=args.get('msg', 'bad_json'), should_exit=False)
         else:
             yield f"未知工具: {tool_name}\n"
@@ -74,71 +82,78 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
     ]
     turn = 0; response = None; tool_calls = []; tool_results = []; next_prompt = ''; exit_reason = {}
     handler.max_turns = max_turns
+    error = None
     _hook('agent_before', locals())
-    while turn < handler.max_turns:
-        turn += 1; turnstr = f'LLM Running (Turn {turn}) ...'
-        if handler.parent.task_dir: turnstr = f'Turn {turn} ...'
-        if verbose: turnstr = f'**{turnstr}**'
-        if yield_info: yield {'turn': turn}
-        yield f"\n\n{turnstr}\n\n"
-        if turn%10 == 0: client.last_tools = ''  # 每10轮重置一次工具描述
-        _hook('turn_before', locals())
-        _hook('llm_before', locals())
-        response_gen = client.chat(messages=messages, tools=tools_schema)
-        if verbose:
-            response = yield from response_gen
-            yield '\n\n'
-        else:
-            response = exhaust(response_gen)
-            cleaned = _clean_content(response.content)
-            if cleaned: yield cleaned + '\n'
-        _hook('llm_after', locals())
-
-        if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
-        else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
-                          for tc in response.tool_calls]
-       
-        tool_results = []; next_prompts = set(); exit_reason = {}; final_turn = False
-        for ii, tc in enumerate(tool_calls):
-            tool_name, args, tid = tc['tool_name'], tc['args'], tc.get('id', '')
-            if tool_name == 'no_tool': pass
-            else: 
-                if verbose: yield f"🛠️ Tool: `{tool_name}`  📥 args:\n````text\n{get_pretty_json(args)}\n````\n"
-                else: yield f"🛠️ {tool_name}({_compact_tool_args(tool_name, args)})\n\n\n"
-            handler.current_turn = turn
-            gen = handler.dispatch(tool_name, args, response, index=ii, tool_num=len(tool_calls))
-            try:
-                v = next(gen)
-                def proxy(): yield v; return (yield from gen)
-                if verbose: yield '`````\n'
-                outcome = (yield from proxy()) if verbose else exhaust(proxy())
-                if verbose: yield '`````\n'
-            except StopIteration as e: outcome = e.value
-            
-            if outcome.should_exit: 
-                exit_reason = {'result': 'EXITED', 'data': outcome.data}; break
-            if not outcome.next_prompt: 
-                exit_reason = {'result': 'CURRENT_TASK_DONE', 'data': outcome.data}; break
-            if outcome.next_prompt.startswith('未知工具'): client.last_tools = ''
-            if outcome.data is not None and tool_name != 'no_tool': 
-                datastr = json.dumps(outcome.data, ensure_ascii=False, default=json_default) if type(outcome.data) in [dict, list] else str(outcome.data) 
-                tool_results.append({'tool_use_id': tid, 'content': datastr})
-            next_prompts.add(outcome.next_prompt)
-        if len(next_prompts) == 0 or exit_reason:
-            if len(handler._done_hooks) == 0 or exit_reason.get('result', '') == 'EXITED':
-                final_turn = True
+    try:
+        while turn < handler.max_turns:
+            turn += 1; turnstr = f'LLM Running (Turn {turn}) ...'
+            if handler.parent.task_dir: turnstr = f'Turn {turn} ...'
+            if verbose: turnstr = f'**{turnstr}**'
+            if yield_info: yield {'turn': turn}
+            yield f"\n\n{turnstr}\n\n"
+            if turn%10 == 0: client.last_tools = ''  # 每10轮重置一次工具描述
+            _hook('turn_before', locals())
+            _hook('llm_before', locals())
+            response_gen = client.chat(messages=messages, tools=tools_schema)
+            if verbose:
+                response = yield from response_gen
+                yield '\n\n'
             else:
-                next_prompts.add(handler._done_hooks.pop(0))
-        if not exit_reason and turn >= handler.max_turns:
-            exit_reason = {'result': 'MAX_TURNS_EXCEEDED'}
-            final_turn = True
-        next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
-        _hook('turn_after', locals())
-        if final_turn: break
-        messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
-    if not exit_reason: exit_reason = {'result': 'MAX_TURNS_EXCEEDED'}
-    _hook('agent_after', locals())
-    return exit_reason
+                response = exhaust(response_gen)
+                cleaned = _clean_content(response.content)
+                if cleaned: yield cleaned + '\n'
+            _hook('llm_after', locals())
+
+            if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
+            else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
+                              for tc in response.tool_calls]
+
+            tool_results = []; next_prompts = set(); exit_reason = {}; final_turn = False
+            for ii, tc in enumerate(tool_calls):
+                tool_name, args, tid = tc['tool_name'], tc['args'], tc.get('id', '')
+                if tool_name == 'no_tool': pass
+                else:
+                    if verbose: yield f"🛠️ Tool: `{tool_name}`  📥 args:\n````text\n{get_pretty_json(args)}\n````\n"
+                    else: yield f"🛠️ {tool_name}({_compact_tool_args(tool_name, args)})\n\n\n"
+                handler.current_turn = turn
+                gen = handler.dispatch(tool_name, args, response, index=ii, tool_num=len(tool_calls))
+                try:
+                    v = next(gen)
+                    def proxy(): yield v; return (yield from gen)
+                    if verbose: yield '`````\n'
+                    outcome = (yield from proxy()) if verbose else exhaust(proxy())
+                    if verbose: yield '`````\n'
+                except StopIteration as e: outcome = e.value
+
+                if outcome.should_exit:
+                    exit_reason = {'result': 'EXITED', 'data': outcome.data}; break
+                if not outcome.next_prompt:
+                    exit_reason = {'result': 'CURRENT_TASK_DONE', 'data': outcome.data}; break
+                if outcome.next_prompt.startswith('未知工具'): client.last_tools = ''
+                if outcome.data is not None and tool_name != 'no_tool':
+                    datastr = json.dumps(outcome.data, ensure_ascii=False, default=json_default) if type(outcome.data) in [dict, list] else str(outcome.data)
+                    tool_results.append({'tool_use_id': tid, 'content': datastr})
+                next_prompts.add(outcome.next_prompt)
+            if len(next_prompts) == 0 or exit_reason:
+                if len(handler._done_hooks) == 0 or exit_reason.get('result', '') == 'EXITED':
+                    final_turn = True
+                else:
+                    next_prompts.add(handler._done_hooks.pop(0))
+            if not exit_reason and turn >= handler.max_turns:
+                exit_reason = {'result': 'MAX_TURNS_EXCEEDED'}
+                final_turn = True
+            next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
+            _hook('turn_after', locals())
+            if final_turn: break
+            messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
+        if not exit_reason: exit_reason = {'result': 'MAX_TURNS_EXCEEDED'}
+        return exit_reason
+    except Exception as exc:
+        error = _exception_data(exc)
+        exit_reason = {'result': 'ERROR', 'error': error}
+        raise
+    finally:
+        _hook('agent_after', locals())
 
 def _clean_content(text):
     if not text: return ''

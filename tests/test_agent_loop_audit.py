@@ -47,6 +47,9 @@ class AuditHandler(BaseHandler):
     def do_continue_task(self, args, response):
         return StepOutcome({"ok": True}, next_prompt="continue")
 
+    def do_fail_task(self, args, response):
+        raise RuntimeError("tool exploded")
+
 
 class AgentLoopAuditTests(unittest.TestCase):
     def setUp(self):
@@ -57,7 +60,7 @@ class AgentLoopAuditTests(unittest.TestCase):
         hooks.clear()
         hooks._registry.update(self._registry)
 
-    def _record_hooks(self):
+    def _record_hooks(self, names=("turn_after", "agent_after")):
         events = []
 
         def recorder(name):
@@ -66,7 +69,7 @@ class AgentLoopAuditTests(unittest.TestCase):
 
             return _callback
 
-        for name in ("turn_after", "agent_after"):
+        for name in names:
             hooks.register(name)(recorder(name))
         return events
 
@@ -98,6 +101,20 @@ class AgentLoopAuditTests(unittest.TestCase):
         self.assertEqual([name for name, _ctx in events], ["turn_after", "agent_after"])
         self.assertEqual(events[0][1]["exit_reason"]["result"], "MAX_TURNS_EXCEEDED")
         self.assertEqual(events[-1][1]["exit_reason"]["result"], "MAX_TURNS_EXCEEDED")
+
+    def test_tool_after_and_agent_after_fire_on_tool_exception(self):
+        events = self._record_hooks(("tool_after", "agent_after"))
+        handler = AuditHandler()
+        client = DummyClient([DummyResponse([_tool_call("fail_task")])])
+
+        with patch("agent_loop.classify_tool_call", None), patch("agent_loop.write_policy_audit", None):
+            with self.assertRaises(RuntimeError):
+                exhaust(agent_runner_loop(client, "system", "do it", handler, [], max_turns=1, verbose=False))
+
+        self.assertEqual([name for name, _ctx in events], ["tool_after", "agent_after"])
+        self.assertEqual(events[0][1]["error"]["type"], "RuntimeError")
+        self.assertEqual(events[1][1]["exit_reason"]["result"], "ERROR")
+        self.assertEqual(events[1][1]["error"]["type"], "RuntimeError")
 
 
 if __name__ == "__main__":

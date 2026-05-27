@@ -43,6 +43,15 @@ def _tool_result(ret):
     }
 
 
+def _error_info(ctx):
+    error = ctx.get("error")
+    if not error:
+        return None
+    if isinstance(error, dict):
+        return error
+    return {"type": type(error).__name__, "message": str(error)[:1000]}
+
+
 @hooks.register("agent_before")
 def _agent_before(ctx):
     handler = _handler(ctx)
@@ -72,6 +81,7 @@ def _agent_after(ctx):
             "run_id": _run_id(ctx),
             "elapsed_ms": elapsed_ms,
             "exit_reason": ctx.get("exit_reason"),
+            "error": _error_info(ctx),
         },
     )
 
@@ -157,5 +167,6 @@ def _tool_after(ctx):
             "index": ctx.get("index"),
             "tool_num": ctx.get("tool_num"),
             "result": _tool_result(ctx.get("ret")),
+            "error": _error_info(ctx),
         },
     )

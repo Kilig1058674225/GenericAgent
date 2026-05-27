@@ -163,6 +163,36 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertIn("agent_run_start", names)
         self.assertIn("tool_start", names)
 
+    def test_local_audit_plugin_records_error_events(self):
+        from plugins import local_audit
+
+        handler = DummyHandler(safety_policy.PROJECT_ROOT / "temp")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"GA_AUDIT_DIR": tmpdir}, clear=False):
+                local_audit._agent_before({"handler": handler, "user_input": "hello", "max_turns": 1})
+                local_audit._tool_after(
+                    {
+                        "handler": handler,
+                        "tool_name": "code_run",
+                        "index": 0,
+                        "tool_num": 1,
+                        "error": {"type": "RuntimeError", "message": "boom"},
+                    }
+                )
+                local_audit._agent_after(
+                    {
+                        "handler": handler,
+                        "exit_reason": {"result": "ERROR"},
+                        "error": {"type": "RuntimeError", "message": "boom"},
+                    }
+                )
+                events = iter_audit_events(limit=5)
+
+        tool_end = next(event for event in events if event["event"] == "tool_end")
+        agent_end = next(event for event in events if event["event"] == "agent_run_end")
+        self.assertEqual(tool_end["error"]["type"], "RuntimeError")
+        self.assertEqual(agent_end["error"]["type"], "RuntimeError")
+
 
 if __name__ == "__main__":
     unittest.main()

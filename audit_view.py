@@ -24,6 +24,9 @@ def summarize_audit_event(event: dict[str, Any]) -> str:
         return " ".join(str(part) for part in parts if part != "")
     if name in {"tool_start", "tool_end"}:
         parts = [event.get("tool_name", "?"), f"turn={event.get('turn', '?')}"]
+        if event.get("error"):
+            error = event.get("error") or {}
+            parts.append(f"error={error.get('type', 'Error') if isinstance(error, dict) else 'Error'}")
         result = event.get("result")
         if isinstance(result, dict) and result.get("should_exit") is not None:
             parts.append(f"exit={result.get('should_exit')}")
@@ -37,6 +40,9 @@ def summarize_audit_event(event: dict[str, Any]) -> str:
         ]
         if event.get("exit_reason"):
             parts.append(f"exit={event.get('exit_reason')}")
+        if event.get("error"):
+            error = event.get("error") or {}
+            parts.append(f"error={error.get('type', 'Error') if isinstance(error, dict) else 'Error'}")
         return " ".join(parts)
     if name == "llm_start":
         return f"turn={event.get('turn', '?')} messages={event.get('message_count', '?')} tools={event.get('tool_schema_count', '?')}"
