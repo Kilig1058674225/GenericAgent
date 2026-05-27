@@ -4,6 +4,7 @@ ga_cli/cli.py - GenericAgent 命令行分发系统
 通过 python -m ga_cli <命令> 或 ga <命令> 调用
 """
 import os, sys, subprocess, argparse, textwrap
+from pathlib import Path
 
 
 def _configure_output_encoding():
@@ -124,6 +125,12 @@ COMMANDS = {
     "audit": {
         "help": "查看最近审计事件",
         "desc": "读取 temp/runs 下的 JSONL 审计日志，可按事件名过滤",
+        "cmd": None,
+        "internal": True,
+    },
+    "skills": {
+        "help": "管理本地技能注册表",
+        "desc": "发现、列出、启用、禁用和验证 memory/skill_registry.json",
         "cmd": None,
         "internal": True,
     },
@@ -268,6 +275,23 @@ def cmd_doctor():
     except Exception as exc:
         statuses.append(_doctor_item("WARN", "import streamlit", f"UI extra missing or broken: {exc}"))
 
+    try:
+        from skill_registry import discover_skills, sync_registry, validate_registry
+        probe = Path(PROJECT_DIR) / "temp" / "runs" / ".doctor_skill_registry.json"
+        data = sync_registry(path=probe)
+        validation = validate_registry(path=probe)
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        status = "PASS" if validation.get("ok") else "WARN"
+        detail = f"{len(discover_skills())} discovered, probe {len(data.get('skills', []))} indexed"
+        if validation.get("errors"):
+            detail += f"; {len(validation['errors'])} validation error(s)"
+        statuses.append(_doctor_item(status, "skill registry", detail))
+    except Exception as exc:
+        statuses.append(_doctor_item("WARN", "skill registry", f"check failed: {exc}"))
+
     mykey_py = os.path.join(PROJECT_DIR, "mykey.py")
     mykey_json = os.path.join(PROJECT_DIR, "mykey.json")
     env_ready = bool(os.environ.get("GENERICAGENT_API_KEY")) and bool(os.environ.get("GENERICAGENT_MODEL"))
@@ -375,7 +399,7 @@ def cmd_audit(argv=None):
 
     events = iter_audit_events(limit=parsed.limit, event=parsed.event)
     if parsed.json:
-        print(json.dumps(events, ensure_ascii=False, indent=2))
+        print(json.dumps(events, ensure_ascii=True, indent=2))
         return
     if not events:
         print("No audit events found.")
@@ -389,6 +413,66 @@ def cmd_audit(argv=None):
         event_name = str(item.get("event", ""))[:20]
         summary = _summarize_audit_event(item)
         print(f"  {ts:25s}  {event_name:20s}  {summary}")
+    print()
+
+
+def cmd_skills(argv=None):
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="ga skills",
+        description="管理本地技能注册表",
+    )
+    sub = parser.add_subparsers(dest="action")
+
+    p_list = sub.add_parser("list", help="列出技能")
+    p_list.add_argument("--all", action="store_true", help="包含已禁用技能")
+    p_list.add_argument("--json", action="store_true", help="输出 JSON")
+
+    sub.add_parser("sync", help="发现 memory/ 下的技能并更新注册表")
+    sub.add_parser("validate", help="验证注册表中的技能源文件")
+
+    p_enable = sub.add_parser("enable", help="启用技能")
+    p_enable.add_argument("skill_id")
+
+    p_disable = sub.add_parser("disable", help="禁用技能")
+    p_disable.add_argument("skill_id")
+
+    parsed = parser.parse_args(argv or ["list"])
+    if PROJECT_DIR not in sys.path:
+        sys.path.insert(0, PROJECT_DIR)
+    from skill_registry import list_skills, set_skill_enabled, sync_registry, validate_registry
+
+    action = parsed.action or "list"
+    if action == "sync":
+        data = sync_registry()
+        print(f"Synced {len(data.get('skills', []))} skill(s).")
+        return
+    if action == "validate":
+        result = validate_registry()
+        print(json.dumps(result, ensure_ascii=True, indent=2))
+        if not result.get("ok"):
+            sys.exit(1)
+        return
+    if action in {"enable", "disable"}:
+        item = set_skill_enabled(parsed.skill_id, action == "enable")
+        state = "enabled" if item.get("enabled", True) else "disabled"
+        print(f"{item['id']} {state}.")
+        return
+
+    skills = list_skills(include_disabled=parsed.all)
+    if parsed.json:
+        print(json.dumps(skills, ensure_ascii=True, indent=2))
+        return
+    if not skills:
+        print("No skills in registry. Run `ga skills sync` first.")
+        return
+    print()
+    print(f"  {'状态':6s}  {'ID':34s}  {'类型':8s}  {'标题'}")
+    print(f"  {'━'*6}  {'━'*34}  {'━'*8}  {'━'*40}")
+    for item in skills:
+        state = "on" if item.get("enabled", True) else "off"
+        print(f"  {state:6s}  {str(item.get('id', ''))[:34]:34s}  {str(item.get('kind', ''))[:8]:8s}  {item.get('title', '')}")
     print()
 
 
@@ -409,6 +493,7 @@ def main():
               ga list              列出所有命令
               ga doctor            运行环境自诊断
               ga audit             查看最近审计事件
+              ga skills sync       更新技能注册表
         """),
     )
     parser.add_argument("command", nargs="?", help="命令名")
@@ -447,6 +532,10 @@ def main():
 
     if cmd == "audit":
         cmd_audit(sys.argv[2:])
+        return
+
+    if cmd == "skills":
+        cmd_skills(sys.argv[2:])
         return
 
     if cmd not in COMMANDS:

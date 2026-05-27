@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from ga_cli.cli import cmd_audit
+from ga_cli.cli import cmd_audit, cmd_skills
 from safety_policy import write_audit_event
 
 
@@ -37,6 +37,41 @@ class CliAuditTests(unittest.TestCase):
         data = json.loads(rendered)
         self.assertEqual(data[0]["apikey"], "[REDACTED]")
         self.assertNotIn(raw_secret, rendered)
+
+    def test_cmd_skills_sync_list_and_toggle(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = os.path.join(tmpdir, "memory")
+            os.makedirs(root)
+            with open(os.path.join(root, "demo_sop.md"), "w", encoding="utf-8") as f:
+                f.write("# Demo SOP\n\nUse web_scan safely.\n")
+            registry = os.path.join(tmpdir, "skill_registry.json")
+            env = {"GA_SKILL_ROOT": root, "GA_SKILL_REGISTRY": registry}
+            with patch.dict(os.environ, env, clear=False):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    cmd_skills(["sync"])
+                self.assertIn("Synced 1 skill", out.getvalue())
+
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    cmd_skills(["list", "--json"])
+                skills = json.loads(out.getvalue())
+                skill_id = skills[0]["id"]
+
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    cmd_skills(["disable", skill_id])
+                self.assertIn("disabled", out.getvalue())
+
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    cmd_skills(["list", "--json"])
+                self.assertEqual(json.loads(out.getvalue()), [])
+
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    cmd_skills(["list", "--all", "--json"])
+                self.assertFalse(json.loads(out.getvalue())[0]["enabled"])
 
 
 if __name__ == "__main__":
