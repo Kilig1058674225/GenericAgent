@@ -5,9 +5,26 @@ ga_cli/cli.py - GenericAgent 命令行分发系统
 """
 import os, sys, subprocess, argparse, textwrap
 
-# Windows GBK 终端兼容
-if sys.platform == "win32" and sys.stdout.encoding and sys.stdout.encoding.lower() in ("gbk", "gb2312"):
-    sys.stdout.reconfigure(errors="replace") if hasattr(sys.stdout, "reconfigure") else None
+
+def _configure_output_encoding():
+    """Prefer UTF-8 for Chinese/English mixed CLI output on Windows terminals."""
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    if sys.platform != "win32":
+        return
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            try:
+                stream.reconfigure(errors="replace")
+            except Exception:
+                pass
+
+
+_configure_output_encoding()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -98,6 +115,12 @@ COMMANDS = {
         "cmd": None,
         "internal": True,
     },
+    "doctor": {
+        "help": "运行本地环境自诊断",
+        "desc": "检查 Python、依赖、模型配置、Git 远端、忽略规则和 Streamlit 端口",
+        "cmd": None,
+        "internal": True,
+    },
 }
 
 
@@ -146,6 +169,175 @@ def cmd_update():
         print(r2.stderr[-500:])
 
 
+def _doctor_item(status, name, detail):
+    print(f"[{status:4s}] {name:26s} {detail}")
+    return status
+
+
+def _run_git(args):
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
+def _port_is_open(host, port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) == 0
+
+
+def _probe_http_title(host, port):
+    from html.parser import HTMLParser
+    from urllib.request import urlopen
+
+    class TitleParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._in_title = False
+            self.title = ""
+
+        def handle_starttag(self, tag, attrs):
+            if tag.lower() == "title":
+                self._in_title = True
+
+        def handle_endtag(self, tag):
+            if tag.lower() == "title":
+                self._in_title = False
+
+        def handle_data(self, data):
+            if self._in_title:
+                self.title += data
+
+    try:
+        with urlopen(f"http://{host}:{port}", timeout=2) as response:
+            body = response.read(4096).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    parser = TitleParser()
+    parser.feed(body)
+    return parser.title.strip()
+
+
+def cmd_doctor():
+    """Run a local health check without printing secrets."""
+    import importlib
+    import json
+
+    if PROJECT_DIR not in sys.path:
+        sys.path.insert(0, PROJECT_DIR)
+
+    print("\nGenericAgent doctor\n")
+    statuses = []
+
+    version = sys.version_info
+    version_text = f"{version.major}.{version.minor}.{version.micro} ({sys.executable})"
+    if (3, 10) <= version[:2] < (3, 14):
+        status = "PASS" if version[:2] in ((3, 11), (3, 12)) else "WARN"
+        detail = version_text if status == "PASS" else f"{version_text}; recommended 3.11 or 3.12"
+    else:
+        status, detail = "FAIL", f"{version_text}; requires >=3.10,<3.14"
+    statuses.append(_doctor_item(status, "Python", detail))
+
+    for module_name in ("agent_loop", "agentmain", "llmcore", "requests", "bs4", "bottle", "aiohttp"):
+        try:
+            importlib.import_module(module_name)
+            statuses.append(_doctor_item("PASS", f"import {module_name}", "ok"))
+        except Exception as exc:
+            statuses.append(_doctor_item("FAIL", f"import {module_name}", str(exc)))
+
+    try:
+        importlib.import_module("streamlit")
+        statuses.append(_doctor_item("PASS", "import streamlit", "ok"))
+    except Exception as exc:
+        statuses.append(_doctor_item("WARN", "import streamlit", f"UI extra missing or broken: {exc}"))
+
+    mykey_py = os.path.join(PROJECT_DIR, "mykey.py")
+    mykey_json = os.path.join(PROJECT_DIR, "mykey.json")
+    env_ready = bool(os.environ.get("GENERICAGENT_API_KEY")) and bool(os.environ.get("GENERICAGENT_MODEL"))
+    config_sources = []
+    if os.path.exists(mykey_py):
+        config_sources.append("mykey.py")
+    if os.path.exists(mykey_json):
+        config_sources.append("mykey.json")
+    if env_ready:
+        config_sources.append("env")
+    if config_sources:
+        statuses.append(_doctor_item("PASS", "model config", "found " + ", ".join(config_sources) + " (secrets hidden)"))
+    else:
+        statuses.append(_doctor_item("WARN", "model config", "no mykey.py/mykey.json or GENERICAGENT_API_KEY+GENERICAGENT_MODEL env"))
+
+    policy_mode = os.environ.get("GA_POLICY_MODE", "observe").strip().lower()
+    if policy_mode in {"off", "observe", "enforce"}:
+        statuses.append(_doctor_item("PASS", "policy mode", policy_mode))
+    else:
+        statuses.append(_doctor_item("WARN", "policy mode", f"invalid {policy_mode!r}; will fall back to observe"))
+
+    try:
+        from llmcore import reload_mykeys
+        mykeys, _changed = reload_mykeys()
+        llm_like = [k for k, v in mykeys.items() if isinstance(v, dict) and ("model" in v or "apikey" in v or "api_key" in v)]
+        statuses.append(_doctor_item("PASS", "model profiles", f"{len(llm_like)} profile(s) loaded; values hidden"))
+    except Exception as exc:
+        statuses.append(_doctor_item("WARN", "model profiles", f"could not load config: {exc}"))
+
+    for remote, expected in (
+        ("origin", "github.com/Kilig1058674225/GenericAgent"),
+        ("upstream", "github.com/lsdefine/GenericAgent"),
+    ):
+        code, out, err = _run_git(["remote", "get-url", remote])
+        if code != 0:
+            statuses.append(_doctor_item("WARN", f"git remote {remote}", err or "missing"))
+        else:
+            compact = out.replace("https://", "").replace("git@", "").replace(":", "/")
+            status = "PASS" if expected in compact else "WARN"
+            statuses.append(_doctor_item(status, f"git remote {remote}", out))
+
+    for path in ("mykey.py", ".venv/", "temp/"):
+        code, _out, _err = _run_git(["check-ignore", "-q", path])
+        statuses.append(_doctor_item("PASS" if code == 0 else "FAIL", f"gitignore {path}", "ignored" if code == 0 else "not ignored"))
+
+    port = int(os.environ.get("GA_STREAMLIT_PORT", "18510"))
+    if _port_is_open("127.0.0.1", port):
+        title = _probe_http_title("127.0.0.1", port)
+        if title:
+            statuses.append(_doctor_item("PASS", "Streamlit port", f"127.0.0.1:{port} is in use by HTTP app ({title})"))
+        else:
+            statuses.append(_doctor_item("WARN", "Streamlit port", f"127.0.0.1:{port} is already in use by a non-HTTP app"))
+    else:
+        statuses.append(_doctor_item("PASS", "Streamlit port", f"127.0.0.1:{port} is available"))
+
+    audit_dir = os.path.join(PROJECT_DIR, "temp", "runs")
+    try:
+        os.makedirs(audit_dir, exist_ok=True)
+        probe = os.path.join(audit_dir, ".doctor_probe")
+        with open(probe, "w", encoding="utf-8") as f:
+            json.dump({"ok": True}, f)
+        os.remove(probe)
+        statuses.append(_doctor_item("PASS", "audit log dir", audit_dir))
+    except Exception as exc:
+        statuses.append(_doctor_item("FAIL", "audit log dir", str(exc)))
+
+    print()
+    if "FAIL" in statuses:
+        print("Doctor result: FAIL - fix the failed checks above.")
+        sys.exit(1)
+    if "WARN" in statuses:
+        print("Doctor result: WARN - usable, with action items above.")
+        return
+    print("Doctor result: PASS - local environment looks healthy.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ga",
@@ -161,6 +353,7 @@ def main():
               ga pet               启动桌面宠物 v2
               ga launch            启动 webview 桌面壳
               ga list              列出所有命令
+              ga doctor            运行环境自诊断
         """),
     )
     parser.add_argument("command", nargs="?", help="命令名")
@@ -191,6 +384,10 @@ def main():
 
     if cmd == "update":
         cmd_update()
+        return
+
+    if cmd == "doctor":
+        cmd_doctor()
         return
 
     if cmd not in COMMANDS:

@@ -3,6 +3,10 @@ from dataclasses import dataclass
 from typing import Any, Optional
 try: from plugins.hooks import trigger as _hook
 except ImportError: _hook = lambda *a, **k: None
+try:
+    from safety_policy import classify_tool_call, write_policy_audit
+except ImportError:
+    classify_tool_call = write_policy_audit = None
 @dataclass
 class StepOutcome:
     data: Any
@@ -17,6 +21,29 @@ class BaseHandler:
     def turn_end_callback(self, response, tool_calls, tool_results, turn, next_prompt, exit_reason): return next_prompt
     def dispatch(self, tool_name, args, response, index=0, tool_num=1):
         method_name = f"do_{tool_name}"
+        if classify_tool_call and write_policy_audit:
+            decision = classify_tool_call(tool_name, args, handler=self)
+            executed = not decision.blocks_execution
+            write_policy_audit(decision, args, index=index, tool_num=tool_num, executed=executed)
+            if decision.blocks_execution:
+                yield f"[Policy] {decision.decision}: {tool_name} ({decision.risk}) - {decision.reason}\n"
+                data = {
+                    "status": "blocked",
+                    "tool_name": tool_name,
+                    "policy": decision.public_dict(),
+                }
+                if decision.needs_confirmation:
+                    data = {
+                        "status": "INTERRUPT",
+                        "intent": "HUMAN_CONFIRMATION_REQUIRED",
+                        "data": {
+                            "question": f"工具 {tool_name} 被安全策略暂停：{decision.reason}。确认后请调整 GA_POLICY_MODE 或改用更安全的步骤。",
+                            "candidates": ["取消执行", "我已了解风险，稍后手动启用"],
+                            "policy": decision.public_dict(),
+                        },
+                    }
+                    return StepOutcome(data, next_prompt="", should_exit=True)
+                return StepOutcome(data, next_prompt=f"工具 {tool_name} 已被安全策略阻止：{decision.reason}", should_exit=False)
         if hasattr(self, method_name):
             args['_index'] = index; args['_tool_num'] = tool_num
             _hook('tool_before', locals())
