@@ -6,8 +6,9 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from ga_cli.cli import cmd_audit, cmd_skills
+from ga_cli.cli import cmd_audit, cmd_skills, cmd_snapshots
 from safety_policy import write_audit_event
+from workspace_guard import create_file_snapshot
 
 
 class CliAuditTests(unittest.TestCase):
@@ -72,6 +73,33 @@ class CliAuditTests(unittest.TestCase):
                 with redirect_stdout(out):
                     cmd_skills(["list", "--all", "--json"])
                 self.assertFalse(json.loads(out.getvalue())[0]["enabled"])
+
+    def test_cmd_snapshots_list_and_restore(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "notes.txt")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("before")
+            env = {"GA_SNAPSHOT_DIR": os.path.join(tmpdir, "snapshots"), "GA_AUDIT_DIR": os.path.join(tmpdir, "audit")}
+            with patch.dict(os.environ, env, clear=False):
+                snap = create_file_snapshot(target, reason="cli", tool_name="unit")
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write("after")
+
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    cmd_snapshots(["list", "-n", "1", "--json"])
+                listed = json.loads(out.getvalue())
+
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    cmd_snapshots(["restore", snap["snapshot_id"], "--no-pre-snapshot", "--json"])
+                restored = json.loads(out.getvalue())
+                with open(target, encoding="utf-8") as f:
+                    restored_text = f.read()
+
+        self.assertEqual(listed[0]["id"], snap["snapshot_id"])
+        self.assertEqual(restored["status"], "success")
+        self.assertEqual(restored_text, "before")
 
 
 if __name__ == "__main__":

@@ -134,6 +134,12 @@ COMMANDS = {
         "cmd": None,
         "internal": True,
     },
+    "snapshots": {
+        "help": "查看/恢复文件快照",
+        "desc": "管理 file_write/file_patch 写入前自动创建的本地快照",
+        "cmd": None,
+        "internal": True,
+    },
 }
 
 
@@ -476,6 +482,60 @@ def cmd_skills(argv=None):
     print()
 
 
+def cmd_snapshots(argv=None):
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="ga snapshots",
+        description="查看/恢复 file_write/file_patch 自动快照",
+    )
+    sub = parser.add_subparsers(dest="action")
+
+    p_list = sub.add_parser("list", help="列出最近快照")
+    p_list.add_argument("-n", "--limit", type=int, default=20, help="显示最近 N 条")
+    p_list.add_argument("--target", help="只显示某个目标文件的快照")
+    p_list.add_argument("--json", action="store_true", help="输出 JSON")
+
+    p_restore = sub.add_parser("restore", help="按快照 id 恢复文件")
+    p_restore.add_argument("snapshot_id")
+    p_restore.add_argument("--no-pre-snapshot", action="store_true", help="恢复前不再给当前文件创建保护快照")
+    p_restore.add_argument("--json", action="store_true", help="输出 JSON")
+
+    parsed = parser.parse_args(argv or ["list"])
+    if PROJECT_DIR not in sys.path:
+        sys.path.insert(0, PROJECT_DIR)
+    from workspace_guard import list_snapshots, restore_snapshot
+
+    action = parsed.action or "list"
+    if action == "restore":
+        result = restore_snapshot(parsed.snapshot_id, create_pre_restore_snapshot=not parsed.no_pre_snapshot)
+        if parsed.json:
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+        else:
+            print(f"{result.get('status')}: {result.get('action') or result.get('msg')} {result.get('target_path', '')}")
+        if result.get("status") != "success":
+            sys.exit(1)
+        return
+
+    snapshots = list_snapshots(limit=parsed.limit, target_path=parsed.target)
+    if parsed.json:
+        print(json.dumps(snapshots, ensure_ascii=True, indent=2))
+        return
+    if not snapshots:
+        print("No snapshots found.")
+        return
+    print()
+    print(f"  {'时间':25s}  {'ID':32s}  {'存在':4s}  {'目标'}")
+    print(f"  {'━'*25}  {'━'*32}  {'━'*4}  {'━'*50}")
+    for item in snapshots:
+        ts = str(item.get("timestamp", ""))[:25]
+        sid = str(item.get("id", ""))[:32]
+        existed = "yes" if item.get("existed") else "no"
+        target = item.get("target_rel") or item.get("target_path", "")
+        print(f"  {ts:25s}  {sid:32s}  {existed:4s}  {target}")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ga",
@@ -494,6 +554,7 @@ def main():
               ga doctor            运行环境自诊断
               ga audit             查看最近审计事件
               ga skills sync       更新技能注册表
+              ga snapshots list    查看最近文件快照
         """),
     )
     parser.add_argument("command", nargs="?", help="命令名")
@@ -536,6 +597,10 @@ def main():
 
     if cmd == "skills":
         cmd_skills(sys.argv[2:])
+        return
+
+    if cmd == "snapshots":
+        cmd_snapshots(sys.argv[2:])
         return
 
     if cmd not in COMMANDS:

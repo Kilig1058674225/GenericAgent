@@ -7,6 +7,7 @@ if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from agent_loop import BaseHandler, StepOutcome, json_default
+from workspace_guard import create_file_snapshot
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None, maxlen=10000):
@@ -199,9 +200,13 @@ def file_patch(path: str, old_content: str, new_content: str):
         count = full_text.count(old_content)
         if count == 0: return {"status": "error", "msg": "未找到匹配的旧文本块，建议：先用 file_read 确认当前内容，再分小段进行 patch。若多次失败则询问用户，严禁自行使用 overwrite 或代码替换。"}
         if count > 1: return {"status": "error", "msg": f"找到 {count} 处匹配，无法确定唯一位置。请提供更长、更具体的旧文本块以确保唯一性。建议：包含上下文行来增强特征，或分小段逐个修改。"}
+        snapshot = create_file_snapshot(path, reason="before file_patch", tool_name="file_patch")
+        if snapshot.get("status") == "error": return {"status": "error", "msg": f"快照创建失败: {snapshot.get('msg')}"}
         updated_text = full_text.replace(old_content, new_content)
         with open(path, 'w', encoding='utf-8') as f: f.write(updated_text)
-        return {"status": "success", "msg": "文件局部修改成功"}
+        result = {"status": "success", "msg": "文件局部修改成功"}
+        if snapshot.get("snapshot_id"): result["snapshot_id"] = snapshot["snapshot_id"]
+        return result
     except Exception as e: return {"status": "error", "msg": str(e)}
 
 _read_dirs = set()
@@ -393,6 +398,10 @@ class GenericAgentHandler(BaseHandler):
             return StepOutcome({"status": "error", "msg": "No content found. Blank is not supported. Put content inside <file_content>...</file_content> tags in your reply body before call file_write."}, next_prompt="\n")
         try:
             new_content = expand_file_refs(content, base_dir=self.cwd)
+            snapshot = create_file_snapshot(path, reason=f"before file_write:{mode}", tool_name="file_write")
+            if snapshot.get("status") == "error":
+                yield f"[Status] ❌ 快照创建失败: {snapshot.get('msg')}\n"
+                return StepOutcome({"status": "error", "msg": f"Snapshot failed: {snapshot.get('msg')}"}, next_prompt="\n")
             if mode == "prepend":
                 old = open(path, 'r', encoding="utf-8").read() if os.path.exists(path) else ""
                 open(path, 'w', encoding="utf-8").write(new_content + old)
@@ -400,7 +409,9 @@ class GenericAgentHandler(BaseHandler):
                 with open(path, 'a' if mode == "append" else 'w', encoding="utf-8") as f: f.write(new_content)
             yield f"[Status] ✅ {mode.capitalize()} 成功 ({len(new_content)} bytes)\n"
             next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
-            return StepOutcome({"status": "success", 'writed_bytes': len(new_content)}, next_prompt=next_prompt)
+            result = {"status": "success", 'writed_bytes': len(new_content)}
+            if snapshot.get("snapshot_id"): result["snapshot_id"] = snapshot["snapshot_id"]
+            return StepOutcome(result, next_prompt=next_prompt)
         except Exception as e:
             yield f"[Status] ❌ 写入异常: {str(e)}\n"
             return StepOutcome({"status": "error", "msg": str(e)}, next_prompt="\n")
