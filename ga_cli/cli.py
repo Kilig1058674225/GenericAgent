@@ -3,7 +3,7 @@ ga_cli/cli.py - GenericAgent 命令行分发系统
 
 通过 python -m ga_cli <命令> 或 ga <命令> 调用
 """
-import os, sys, subprocess, argparse, textwrap
+import os, sys, subprocess, argparse, textwrap, json
 from pathlib import Path
 
 
@@ -125,6 +125,12 @@ COMMANDS = {
     "audit": {
         "help": "查看最近审计事件",
         "desc": "读取 temp/runs 下的 JSONL 审计日志，可按事件名过滤",
+        "cmd": None,
+        "internal": True,
+    },
+    "policy": {
+        "help": "干跑安全策略判断",
+        "desc": "检查某个工具调用会被允许、确认还是阻断，不执行工具",
         "cmd": None,
         "internal": True,
     },
@@ -425,6 +431,78 @@ def cmd_audit(argv=None):
     print()
 
 
+def _parse_json_object(raw, label="args"):
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{label} must be a JSON object: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"{label} must be a JSON object")
+    return data
+
+
+def cmd_policy(argv=None):
+    from types import SimpleNamespace
+
+    parser = argparse.ArgumentParser(
+        prog="ga policy",
+        description="干跑本地安全策略，不执行工具",
+    )
+    sub = parser.add_subparsers(dest="action")
+
+    p_check = sub.add_parser("check", help="检查工具调用的策略结果")
+    p_check.add_argument("tool_name", help="工具名，例如 code_run、file_read、web_execute_js")
+    p_check.add_argument("args_json", nargs="?", default="{}", help="工具参数 JSON 对象")
+    p_check.add_argument("--mode", choices=("off", "observe", "enforce"), help="临时策略模式")
+    p_check.add_argument("--cwd", help="用于相对路径判断的工作目录")
+    p_check.add_argument("--json", action="store_true", help="输出 JSON")
+
+    parsed = parser.parse_args(argv or [])
+    if not parsed.action:
+        parser.print_help()
+        return
+
+    if PROJECT_DIR not in sys.path:
+        sys.path.insert(0, PROJECT_DIR)
+    from safety_policy import classify_tool_call, redact_data
+
+    args = _parse_json_object(parsed.args_json)
+    old_mode = os.environ.get("GA_POLICY_MODE")
+    if parsed.mode:
+        os.environ["GA_POLICY_MODE"] = parsed.mode
+    try:
+        handler = SimpleNamespace(cwd=parsed.cwd) if parsed.cwd else None
+        decision = classify_tool_call(parsed.tool_name, args, handler=handler)
+    finally:
+        if parsed.mode:
+            if old_mode is None:
+                os.environ.pop("GA_POLICY_MODE", None)
+            else:
+                os.environ["GA_POLICY_MODE"] = old_mode
+
+    result = {
+        "tool_name": parsed.tool_name,
+        "args": redact_data(args),
+        "policy": decision.public_dict(),
+        "blocks_execution": decision.blocks_execution,
+        "needs_confirmation": decision.needs_confirmation,
+    }
+    if parsed.json:
+        print(json.dumps(result, ensure_ascii=True, indent=2))
+        return
+
+    print("\nPolicy check\n")
+    print(f"tool:              {parsed.tool_name}")
+    print(f"decision:          {decision.decision}")
+    print(f"risk:              {decision.risk}")
+    print(f"category:          {decision.category}")
+    print(f"mode:              {decision.mode}")
+    print(f"blocks_execution:  {'yes' if decision.blocks_execution else 'no'}")
+    print(f"needs_confirmation:{' yes' if decision.needs_confirmation else ' no'}")
+    print(f"reason:            {decision.reason}")
+    print(f"args:              {json.dumps(result['args'], ensure_ascii=False, default=str)}")
+
+
 def cmd_skills(argv=None):
     import json
 
@@ -674,6 +752,7 @@ def main():
               ga list              列出所有命令
               ga doctor            运行环境自诊断
               ga verify            运行提交前验证套件
+              ga policy check code_run '{"type":"python","code":"print(1)"}'
               ga audit             查看最近审计事件
               ga skills sync       更新技能注册表
               ga snapshots list    查看最近文件快照
@@ -715,6 +794,10 @@ def main():
 
     if cmd == "audit":
         cmd_audit(sys.argv[2:])
+        return
+
+    if cmd == "policy":
+        cmd_policy(sys.argv[2:])
         return
 
     if cmd == "skills":
