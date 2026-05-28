@@ -5,6 +5,27 @@ from __future__ import annotations
 from typing import Any
 
 
+DETAIL_FIELD_ORDER = (
+    "timestamp",
+    "event",
+    "tool_name",
+    "turn",
+    "decision",
+    "risk",
+    "mode",
+    "executed",
+    "category",
+    "reason",
+    "error",
+    "exit_reason",
+    "result",
+    "args",
+    "extra",
+)
+
+HIDDEN_DETAIL_FIELDS = {"_path"}
+
+
 def _clip(value: Any, limit: int = 120) -> str:
     text = "" if value is None else str(value)
     text = " ".join(text.split())
@@ -82,3 +103,30 @@ def audit_event_row(event: dict[str, Any]) -> dict[str, str]:
         "event": str(event.get("event", "")),
         "summary": summarize_audit_event(event),
     }
+
+
+def audit_event_names(events: list[dict[str, Any]]) -> list[str]:
+    names = {str(event.get("event", "")).strip() for event in events}
+    return sorted(name for name in names if name)
+
+
+def filter_audit_events(events: list[dict[str, Any]], names: list[str] | tuple[str, ...] | set[str] | None) -> list[dict[str, Any]]:
+    selected = {str(name) for name in (names or []) if str(name)}
+    if not selected:
+        return list(events)
+    return [event for event in events if str(event.get("event", "")) in selected]
+
+
+def audit_event_detail(event: dict[str, Any]) -> dict[str, Any]:
+    """Return a stable, display-safe detail payload for UI inspection."""
+    from safety_policy import redact_data
+
+    detail: dict[str, Any] = {}
+    for key in DETAIL_FIELD_ORDER:
+        if key in event and key not in HIDDEN_DETAIL_FIELDS:
+            detail[key] = redact_data(event[key])
+    for key in sorted(event):
+        if key in detail or key in HIDDEN_DETAIL_FIELDS:
+            continue
+        detail[str(key)] = redact_data(event[key])
+    return detail

@@ -13,7 +13,7 @@ sys.path.append(os.path.abspath(script_dir))
 
 import streamlit as st
 import time, json, re, threading, queue
-from audit_view import audit_event_row
+from audit_view import audit_event_detail, audit_event_names, audit_event_row, filter_audit_events
 from agentmain import GeneraticAgent
 import chatapp_common  # activate /continue command (monkey patches GeneraticAgent)
 from continue_cmd import handle_frontend_command, reset_conversation, list_sessions, extract_ui_messages
@@ -97,14 +97,36 @@ def render_sidebar():
     with st.expander("Audit timeline", expanded=False):
         try:
             from safety_policy import iter_audit_events
-            events = iter_audit_events(limit=12)
-            if events:
-                for event in events:
+            audit_limit = st.selectbox(
+                "Audit events",
+                [12, 25, 50, 100],
+                index=1,
+                format_func=lambda value: f"Latest {value}",
+                label_visibility="collapsed",
+                key="audit_timeline_limit",
+            )
+            events = iter_audit_events(limit=audit_limit)
+            names = audit_event_names(events)
+            selected_names = st.multiselect(
+                "Event filter",
+                names,
+                placeholder="All event types",
+                label_visibility="collapsed",
+                key="audit_timeline_event_filter",
+            )
+            show_details = st.checkbox("Show details", value=False, key="audit_timeline_show_details")
+            visible_events = filter_audit_events(events, selected_names)
+            if visible_events:
+                for idx, event in enumerate(visible_events[:12]):
                     row = audit_event_row(event)
                     st.caption(f"{row['time']} | {row['event']}")
                     st.text(row["summary"] or "-")
+                    if show_details:
+                        st.json(audit_event_detail(event), expanded=False)
+                if len(visible_events) > 12:
+                    st.caption(f"Showing 12 of {len(visible_events)} matched events.")
             else:
-                st.caption("No audit events yet.")
+                st.caption("No matching audit events.")
         except Exception as e:
             st.caption(f"Audit unavailable: {e}")
     

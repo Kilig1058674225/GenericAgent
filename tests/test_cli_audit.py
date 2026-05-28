@@ -7,7 +7,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from ga_cli.cli import cmd_audit, cmd_skills, cmd_snapshots
-from audit_view import audit_event_row, summarize_audit_event
+from audit_view import audit_event_detail, audit_event_names, audit_event_row, filter_audit_events, summarize_audit_event
 from safety_policy import write_audit_event
 from workspace_guard import create_file_snapshot
 
@@ -32,6 +32,29 @@ class CliAuditTests(unittest.TestCase):
                 "summary": "code_run block critical executed=False",
             },
         )
+
+    def test_audit_view_filters_and_redacts_detail_payloads(self):
+        raw_secret = "detail-secret-placeholder"
+        events = [
+            {"event": "tool_start", "timestamp": "2026-05-28T12:00:00+00:00"},
+            {
+                "event": "policy_decision",
+                "timestamp": "2026-05-28T12:01:00+00:00",
+                "tool_name": "code_run",
+                "args": {"apikey": raw_secret, "prompt": "hello"},
+                "_path": "temp/runs/audit.jsonl",
+            },
+        ]
+
+        self.assertEqual(audit_event_names(events), ["policy_decision", "tool_start"])
+        self.assertEqual(filter_audit_events(events, ["policy_decision"]), [events[1]])
+        self.assertEqual(filter_audit_events(events, []), events)
+
+        detail = audit_event_detail(events[1])
+        rendered = json.dumps(detail, ensure_ascii=False)
+        self.assertEqual(detail["args"]["apikey"], "[REDACTED]")
+        self.assertNotIn("_path", detail)
+        self.assertNotIn(raw_secret, rendered)
 
     def test_cmd_audit_outputs_text_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
