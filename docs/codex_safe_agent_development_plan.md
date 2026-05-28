@@ -97,6 +97,7 @@ Reduce damage from autonomous edits.
 - For repo edits, create a pre-task git snapshot or require a clean/known worktree state.
 - Show a diff summary before applying risky edits when policy requires approval.
 - Add a rollback command for task-generated file changes where feasible.
+- Verify snapshot backup paths and hashes before restore so a tampered snapshot index cannot restore arbitrary or corrupted content.
 
 Acceptance:
 

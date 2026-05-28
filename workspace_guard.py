@@ -35,6 +35,10 @@ def snapshot_index_path() -> Path:
     return snapshot_dir() / INDEX_NAME
 
 
+def snapshot_files_dir() -> Path:
+    return snapshot_dir() / "files"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -59,6 +63,23 @@ def _rel(path: Path) -> str:
         return path.resolve().relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
         return path.resolve().as_posix()
+
+
+def _is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_snapshot_file(path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+        root = snapshot_files_dir().resolve()
+    except Exception:
+        return False
+    return resolved.is_file() and _is_inside(resolved, root)
 
 
 def _append_record(record: dict[str, Any]) -> None:
@@ -100,8 +121,7 @@ def create_file_snapshot(target_path: str | os.PathLike[str], *, reason: str = "
         return {"status": "error", "msg": f"snapshot target is not a file: {target}"}
 
     sid = _snapshot_id()
-    root = snapshot_dir()
-    files_dir = root / "files"
+    files_dir = snapshot_files_dir()
     files_dir.mkdir(parents=True, exist_ok=True)
 
     existed = target.exists()
@@ -167,9 +187,14 @@ def restore_snapshot(snapshot_id: str, *, create_pre_restore_snapshot: bool = Tr
         pre_restore = create_file_snapshot(target, reason=f"pre_restore:{snapshot_id}", tool_name="snapshot_restore")
 
     if record.get("existed"):
-        snapshot_path = Path(record.get("snapshot_path") or "")
+        snapshot_path = Path(record.get("snapshot_path") or "").expanduser().resolve()
         if not snapshot_path.is_file():
             return {"status": "error", "msg": f"snapshot file missing: {snapshot_path}"}
+        if not _is_snapshot_file(snapshot_path):
+            return {"status": "error", "msg": f"snapshot file outside snapshot dir: {snapshot_path}"}
+        expected_sha = record.get("sha256")
+        if expected_sha and _sha256(snapshot_path) != expected_sha:
+            return {"status": "error", "msg": f"snapshot hash mismatch: {snapshot_id}"}
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snapshot_path, target)
         action = "restored"
