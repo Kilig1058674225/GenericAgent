@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,10 @@ RISK_CRITICAL = "critical"
 MODE_OFF = "off"
 MODE_OBSERVE = "observe"
 MODE_ENFORCE = "enforce"
+
+CONFIRMATION_TOKEN_ENV = "GA_POLICY_CONFIRM_TOKEN"
+CONFIRMATION_TOKEN_ALIASES = (CONFIRMATION_TOKEN_ENV, "GA_POLICY_APPROVAL_TOKEN")
+CONFIRMATION_TOKEN_PREFIX = "ga-confirm-v1-"
 
 PAYMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])("
@@ -116,6 +121,13 @@ def _stringify_args(args: Any) -> str:
         return json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:
         return str(args)
+
+
+def _canonical_json(data: Any) -> str:
+    try:
+        return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        return str(data)
 
 
 def _contains_payment(text: str) -> bool:
@@ -251,6 +263,63 @@ def classify_tool_call(tool_name: str, args: dict[str, Any] | None, handler: Any
         return PolicyDecision(tool_name, "model_repair", RISK_LOW, DECISION_ALLOW, mode, "model JSON repair flow")
 
     return PolicyDecision(tool_name, "unknown_tool", RISK_MEDIUM, DECISION_CONFIRM, mode, "unknown tool requires confirmation")
+
+
+def confirmation_token_for_decision(decision: PolicyDecision, args: dict[str, Any] | None) -> str:
+    """Return a stable one-call approval token for an exact policy decision."""
+    payload = {
+        "version": 1,
+        "tool_name": decision.tool_name,
+        "category": decision.category,
+        "risk": decision.risk,
+        "decision": decision.decision,
+        "mode": decision.mode,
+        "reason": decision.reason,
+        "args": args or {},
+    }
+    digest = hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+    return f"{CONFIRMATION_TOKEN_PREFIX}{digest[:32]}"
+
+
+def _split_confirmation_tokens(raw: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[\s,;]+", raw) if item.strip()]
+
+
+def _remove_first_token(tokens: list[str], expected: str) -> list[str]:
+    removed = False
+    remaining = []
+    for token in tokens:
+        if token == expected and not removed:
+            removed = True
+            continue
+        remaining.append(token)
+    return remaining
+
+
+def consume_confirmation_token(
+    decision: PolicyDecision,
+    args: dict[str, Any] | None,
+    environ: dict[str, str] | None = None,
+) -> bool:
+    """Consume a matching one-time confirmation token from the environment."""
+    if not decision.needs_confirmation:
+        return False
+    env = environ if environ is not None else os.environ
+    expected = confirmation_token_for_decision(decision, args)
+    for name in CONFIRMATION_TOKEN_ALIASES:
+        raw = env.get(name, "").strip()
+        if not raw:
+            continue
+        tokens = _split_confirmation_tokens(raw)
+        if expected not in tokens:
+            continue
+        remaining = _remove_first_token(tokens, expected)
+        if remaining:
+            env[name] = " ".join(remaining)
+        else:
+            env.pop(name, None)
+        return True
+    return False
 
 
 def _env_secret_values() -> list[str]:

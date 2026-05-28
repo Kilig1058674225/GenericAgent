@@ -4,9 +4,16 @@ from typing import Any, Optional
 try: from plugins.hooks import trigger as _hook
 except ImportError: _hook = lambda *a, **k: None
 try:
-    from safety_policy import classify_tool_call, write_policy_audit
+    from safety_policy import (
+        CONFIRMATION_TOKEN_ENV,
+        classify_tool_call,
+        confirmation_token_for_decision,
+        consume_confirmation_token,
+        write_policy_audit,
+    )
 except ImportError:
-    classify_tool_call = write_policy_audit = None
+    CONFIRMATION_TOKEN_ENV = "GA_POLICY_CONFIRM_TOKEN"
+    classify_tool_call = confirmation_token_for_decision = consume_confirmation_token = write_policy_audit = None
 @dataclass
 class StepOutcome:
     data: Any
@@ -25,9 +32,24 @@ class BaseHandler:
         method_name = f"do_{tool_name}"
         if classify_tool_call and write_policy_audit:
             decision = classify_tool_call(tool_name, args, handler=self)
-            executed = not decision.blocks_execution
-            write_policy_audit(decision, args, index=index, tool_num=tool_num, executed=executed)
-            if decision.blocks_execution:
+            confirmation_token = None
+            confirmation_approved = False
+            audit_extra = None
+            if decision.needs_confirmation and confirmation_token_for_decision and consume_confirmation_token:
+                confirmation_token = confirmation_token_for_decision(decision, args)
+                confirmation_approved = consume_confirmation_token(decision, args)
+                audit_extra = {
+                    "confirmation": {
+                        "status": "approved" if confirmation_approved else "required",
+                        "env_var": CONFIRMATION_TOKEN_ENV,
+                        "token_id": confirmation_token[-12:],
+                    }
+                }
+            executed = not decision.blocks_execution or confirmation_approved
+            write_policy_audit(decision, args, index=index, tool_num=tool_num, executed=executed, extra=audit_extra)
+            if confirmation_approved:
+                yield f"[Policy] confirmed: {tool_name} ({decision.risk}) - {decision.reason}\n"
+            if decision.blocks_execution and not confirmation_approved:
                 yield f"[Policy] {decision.decision}: {tool_name} ({decision.risk}) - {decision.reason}\n"
                 data = {
                     "status": "blocked",
@@ -39,8 +61,10 @@ class BaseHandler:
                         "status": "INTERRUPT",
                         "intent": "HUMAN_CONFIRMATION_REQUIRED",
                         "data": {
-                            "question": f"工具 {tool_name} 被安全策略暂停：{decision.reason}。确认后请调整 GA_POLICY_MODE 或改用更安全的步骤。",
-                            "candidates": ["取消执行", "我已了解风险，稍后手动启用"],
+                            "question": f"工具 {tool_name} 被安全策略暂停：{decision.reason}。如确认本次精确调用可执行，请设置 {CONFIRMATION_TOKEN_ENV} 后重试；该 token 只匹配当前工具与参数。",
+                            "candidates": ["取消执行", f"设置 {CONFIRMATION_TOKEN_ENV} 后重试"],
+                            "confirmation_token": confirmation_token,
+                            "confirmation_env_var": CONFIRMATION_TOKEN_ENV,
                             "policy": decision.public_dict(),
                         },
                     }

@@ -464,7 +464,7 @@ def cmd_policy(argv=None):
 
     if PROJECT_DIR not in sys.path:
         sys.path.insert(0, PROJECT_DIR)
-    from safety_policy import classify_tool_call, redact_data
+    from safety_policy import CONFIRMATION_TOKEN_ENV, classify_tool_call, confirmation_token_for_decision, redact_data
 
     args = _parse_json_object(parsed.args_json)
     old_mode = os.environ.get("GA_POLICY_MODE")
@@ -486,6 +486,8 @@ def cmd_policy(argv=None):
         "policy": decision.public_dict(),
         "blocks_execution": decision.blocks_execution,
         "needs_confirmation": decision.needs_confirmation,
+        "confirmation_env_var": CONFIRMATION_TOKEN_ENV if decision.needs_confirmation else None,
+        "confirmation_token": confirmation_token_for_decision(decision, args) if decision.needs_confirmation else None,
     }
     if parsed.json:
         print(json.dumps(result, ensure_ascii=True, indent=2))
@@ -501,6 +503,9 @@ def cmd_policy(argv=None):
     print(f"needs_confirmation:{' yes' if decision.needs_confirmation else ' no'}")
     print(f"reason:            {decision.reason}")
     print(f"args:              {json.dumps(result['args'], ensure_ascii=False, default=str)}")
+    if decision.needs_confirmation:
+        print(f"confirm_env:       {CONFIRMATION_TOKEN_ENV}")
+        print(f"confirm_token:     {result['confirmation_token']}")
 
 
 def cmd_skills(argv=None):

@@ -9,12 +9,15 @@ from unittest.mock import patch
 import safety_policy
 from agent_loop import BaseHandler, StepOutcome, exhaust
 from safety_policy import (
+    CONFIRMATION_TOKEN_ENV,
     DECISION_ALLOW,
     DECISION_BLOCK,
     DECISION_CONFIRM,
     MODE_ENFORCE,
     MODE_OBSERVE,
     classify_tool_call,
+    confirmation_token_for_decision,
+    consume_confirmation_token,
     iter_audit_events,
     redact_data,
     write_audit_event,
@@ -103,6 +106,21 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertEqual(decision.decision, DECISION_CONFIRM)
         self.assertFalse(decision.blocks_execution)
 
+    def test_confirmation_token_is_exact_and_one_time(self):
+        args = {"type": "python", "code": "print(1)"}
+        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_ENFORCE}, clear=False):
+            decision = classify_tool_call("code_run", args, handler=None)
+
+        token = confirmation_token_for_decision(decision, args)
+        changed_token = confirmation_token_for_decision(decision, {"type": "python", "code": "print(2)"})
+        env = {CONFIRMATION_TOKEN_ENV: token}
+
+        self.assertNotEqual(token, changed_token)
+        self.assertTrue(token.startswith("ga-confirm-v1-"))
+        self.assertTrue(consume_confirmation_token(decision, args, environ=env))
+        self.assertNotIn(CONFIRMATION_TOKEN_ENV, env)
+        self.assertFalse(consume_confirmation_token(decision, args, environ=env))
+
     def test_redaction_handles_secret_keys_and_values(self):
         raw_secret = "sk-" + "testsecret1234567890"
         raw_bearer = "Bearer " + "abcdefghijklmnop"
@@ -167,6 +185,33 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertTrue(outcome.should_exit)
         self.assertEqual(outcome.data["status"], "INTERRUPT")
         self.assertEqual(outcome.data["intent"], "HUMAN_CONFIRMATION_REQUIRED")
+        self.assertEqual(outcome.data["data"]["confirmation_env_var"], CONFIRMATION_TOKEN_ENV)
+        self.assertTrue(outcome.data["data"]["confirmation_token"].startswith("ga-confirm-v1-"))
+
+    def test_dispatch_rejects_wrong_confirmation_token(self):
+        handler = DummyHandler(safety_policy.PROJECT_ROOT / "temp")
+        response = SimpleNamespace(content="")
+
+        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_ENFORCE, CONFIRMATION_TOKEN_ENV: "wrong-token"}, clear=False):
+            outcome = exhaust(handler.dispatch("code_run", {"type": "python", "code": "print(1)"}, response))
+
+        self.assertFalse(handler.executed)
+        self.assertTrue(outcome.should_exit)
+        self.assertEqual(outcome.data["intent"], "HUMAN_CONFIRMATION_REQUIRED")
+
+    def test_dispatch_executes_matching_confirmation_once(self):
+        args = {"type": "python", "code": "print(1)"}
+        handler = DummyHandler(safety_policy.PROJECT_ROOT / "temp")
+        response = SimpleNamespace(content="")
+        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_ENFORCE}, clear=False):
+            decision = classify_tool_call("code_run", args, handler=handler)
+            token = confirmation_token_for_decision(decision, args)
+            os.environ[CONFIRMATION_TOKEN_ENV] = token
+            outcome = exhaust(handler.dispatch("code_run", dict(args), response))
+
+        self.assertTrue(handler.executed)
+        self.assertEqual(outcome.data, {"ok": True})
+        self.assertNotIn(CONFIRMATION_TOKEN_ENV, os.environ)
 
     def test_local_audit_plugin_writes_hook_events(self):
         from plugins import local_audit

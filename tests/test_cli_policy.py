@@ -51,6 +51,8 @@ class CliPolicyTests(unittest.TestCase):
             data = json.loads(out.getvalue())
             self.assertEqual(data["policy"]["decision"], "require_confirmation")
             self.assertTrue(data["blocks_execution"])
+            self.assertEqual(data["confirmation_env_var"], "GA_POLICY_CONFIRM_TOKEN")
+            self.assertTrue(data["confirmation_token"].startswith("ga-confirm-v1-"))
             self.assertEqual(os.environ.get("GA_POLICY_MODE"), "observe")
         finally:
             if old_mode is None:
