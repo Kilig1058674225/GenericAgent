@@ -157,6 +157,21 @@ st.markdown("""
     border-color: #4f8f7f !important;
     color: #ffffff !important;
   }
+  [data-testid="stHeader"] {
+    height: 0;
+    background: transparent;
+  }
+  [data-testid="stToolbar"],
+  [data-testid="stToolbarActions"],
+  [data-testid="stAppDeployButton"],
+  [data-testid="stMainMenu"],
+  [data-testid="stMainMenuButton"],
+  .stAppDeployButton,
+  [class*="stMainMenuPopover"] {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+  }
   .ga-header {
     max-width: 980px;
     margin: 1.4rem auto 1.2rem;
