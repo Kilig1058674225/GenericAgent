@@ -23,13 +23,45 @@ from policy_confirmation import apply_confirmation_token
 
 st.set_page_config(page_title="Cowork", layout="wide")
 
-LANG = os.environ.get('GA_LANG', 'zh')
-if LANG not in ('zh', 'en'): LANG = 'zh'
+DEFAULT_LANG = os.environ.get('GA_LANG', 'zh')
+if DEFAULT_LANG not in ('zh', 'en'): DEFAULT_LANG = 'zh'
+st.session_state.setdefault('ui_lang', DEFAULT_LANG)
+LANG = st.session_state.get('ui_lang', DEFAULT_LANG)
+if LANG not in ('zh', 'en'): LANG = DEFAULT_LANG
 I18N = {
     'zh': {
+        'app_title': 'Cowork',
+        'app_subtitle': '本地安全 Agent 工作台',
+        'app_status': '在线',
+        'language': '界面语言',
+        'model_label': '模型',
+        'model_core': '当前模型',
         'force_stop': '强行停止任务',
         'reinject_tools': '重新注入工具',
-        'desktop_pet': '🐱 桌面宠物',
+        'desktop_pet': '桌面宠物',
+        'audit_timeline': '审计时间线',
+        'audit_latest': '最近 {value} 条',
+        'audit_filter': '筛选事件类型',
+        'audit_filter_placeholder': '全部事件类型',
+        'audit_show_details': '显示详情',
+        'audit_no_matches': '没有匹配的审计事件',
+        'audit_unavailable': '审计不可用: {error}',
+        'audit_showing': '显示 {shown} / {total} 条匹配事件',
+        'find_tasks': '给我找点事做',
+        'start_autonomous': '开始空闲自主行动',
+        'stop_autonomous': '禁止自主行动',
+        'allow_autonomous': '允许自主行动',
+        'autonomous_on': '自主行动运行中，会在你离开它 30 分钟后自动进行',
+        'autonomous_off': '自主行动已停止',
+        'autonomous_started': '已将上次回复时间设为 1800 秒前，自主行动已激活',
+        'autonomous_disabled': '已禁止自主行动',
+        'autonomous_enabled': '已允许自主行动',
+        'find_tasks_prompt': '按照自主行动的规划部分，充分分析我的情况，给我生成一批TODO，务必让我感兴趣',
+        'chat_placeholder': '输入任务或 / 命令',
+        'stop_sent': '已发送停止信号',
+        'tools_injected': '工具已重新注入',
+        'tools_failed': '工具注入失败: {error}',
+        'pet_started': '桌面宠物已启动',
         'policy_confirm_title': '需要确认后继续',
         'policy_confirm_allow': '允许一次并重试',
         'policy_confirm_cancel': '取消本次执行',
@@ -37,9 +69,38 @@ I18N = {
         'policy_confirm_cancelled': '已取消本次执行',
     },
     'en': {
+        'app_title': 'Cowork',
+        'app_subtitle': 'Local safe agent workbench',
+        'app_status': 'Online',
+        'language': 'Interface language',
+        'model_label': 'Model',
+        'model_core': 'Current model',
         'force_stop': 'Force Stop',
         'reinject_tools': 'Reinject Tools',
-        'desktop_pet': '🐱 Desktop Pet',
+        'desktop_pet': 'Desktop Pet',
+        'audit_timeline': 'Audit timeline',
+        'audit_latest': 'Latest {value}',
+        'audit_filter': 'Event filter',
+        'audit_filter_placeholder': 'All event types',
+        'audit_show_details': 'Show details',
+        'audit_no_matches': 'No matching audit events.',
+        'audit_unavailable': 'Audit unavailable: {error}',
+        'audit_showing': 'Showing {shown} of {total} matched events.',
+        'find_tasks': 'Find something for me',
+        'start_autonomous': 'Start idle autonomy',
+        'stop_autonomous': 'Pause autonomy',
+        'allow_autonomous': 'Allow autonomy',
+        'autonomous_on': 'Autonomy is active after 30 minutes away.',
+        'autonomous_off': 'Autonomy is paused.',
+        'autonomous_started': 'Idle autonomy is active.',
+        'autonomous_disabled': 'Autonomy paused.',
+        'autonomous_enabled': 'Autonomy enabled.',
+        'find_tasks_prompt': 'Based on the autonomous planning section, analyze my situation and generate a list of interesting TODOs for me.',
+        'chat_placeholder': 'Ask for a task or type / command',
+        'stop_sent': 'Stop signal sent',
+        'tools_injected': 'Tools injected',
+        'tools_failed': 'Tool injection failed: {error}',
+        'pet_started': 'Desktop pet started',
         'policy_confirm_title': 'Confirmation required',
         'policy_confirm_allow': 'Allow once and retry',
         'policy_confirm_cancel': 'Cancel this run',
@@ -47,7 +108,119 @@ I18N = {
         'policy_confirm_cancelled': 'Cancelled this run',
     },
 }
-def T(key): return I18N.get(LANG, I18N['zh']).get(key, key)
+def T(key, **kwargs):
+    text = I18N.get(st.session_state.get('ui_lang', LANG), I18N['zh']).get(key, key)
+    return text.format(**kwargs) if kwargs else text
+
+st.markdown("""
+<style>
+  :root {
+    --ga-bg: #f5f7f3;
+    --ga-panel: #ffffff;
+    --ga-ink: #17211b;
+    --ga-muted: #66736b;
+    --ga-line: #d9e0d8;
+    --ga-accent: #0f766e;
+    --ga-accent-2: #c2410c;
+    --ga-sidebar: #151a17;
+    --ga-sidebar-soft: #202822;
+  }
+  .stApp {
+    background:
+      linear-gradient(90deg, rgba(15, 118, 110, .035) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(15, 118, 110, .025) 1px, transparent 1px),
+      var(--ga-bg);
+    background-size: 32px 32px;
+    color: var(--ga-ink);
+  }
+  [data-testid="stSidebar"] {
+    background: var(--ga-sidebar);
+    border-right: 1px solid rgba(255,255,255,.08);
+  }
+  [data-testid="stSidebar"] * { color: #edf4ec; }
+  [data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] label p {
+    color: #aeb9b1 !important;
+  }
+  [data-testid="stSidebar"] [data-baseweb="select"] > div,
+  [data-testid="stSidebar"] [data-baseweb="input"] > div {
+    background: var(--ga-sidebar-soft);
+    border: 1px solid #344036;
+    border-radius: 8px;
+  }
+  [data-testid="stSidebar"] button {
+    border-radius: 8px !important;
+    border: 1px solid #344036 !important;
+    background: #202822 !important;
+    color: #eef4ee !important;
+  }
+  [data-testid="stSidebar"] button:hover {
+    border-color: #4f8f7f !important;
+    color: #ffffff !important;
+  }
+  .ga-header {
+    max-width: 980px;
+    margin: 1.4rem auto 1.2rem;
+    padding: 1rem 1.1rem;
+    background: rgba(255,255,255,.82);
+    border: 1px solid var(--ga-line);
+    border-radius: 8px;
+    box-shadow: 0 10px 32px rgba(23,33,27,.08);
+  }
+  .ga-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .ga-title {
+    margin: 0;
+    font-family: Georgia, Cambria, "Times New Roman", serif;
+    font-size: clamp(2rem, 4vw, 3.5rem);
+    line-height: .95;
+    letter-spacing: 0;
+    color: var(--ga-ink);
+  }
+  .ga-subtitle {
+    margin-top: .35rem;
+    color: var(--ga-muted);
+    font-size: .98rem;
+  }
+  .ga-status {
+    min-width: max-content;
+    border: 1px solid #b8d9d4;
+    background: #e7f4f1;
+    color: #0f5f59;
+    border-radius: 8px;
+    padding: .38rem .65rem;
+    font-size: .84rem;
+    font-weight: 700;
+  }
+  [data-testid="stMainBlockContainer"] {
+    padding-top: 1rem;
+    max-width: 1120px;
+  }
+  [data-testid="stChatInput"] {
+    max-width: 860px;
+    margin: 0 auto;
+  }
+  [data-testid="stChatInput"] textarea {
+    border-radius: 8px !important;
+    border: 1px solid #ccd7cf !important;
+    box-shadow: 0 10px 28px rgba(23,33,27,.09) !important;
+  }
+  [data-testid="stChatMessage"] {
+    max-width: 920px;
+    margin: .55rem auto;
+    border-radius: 8px;
+  }
+  div[data-testid="stAlert"] {
+    max-width: 920px;
+    margin-left: auto;
+    margin-right: auto;
+    border-radius: 8px;
+  }
+</style>
+""", unsafe_allow_html=True)
 
 @st.cache_resource
 def init():
@@ -60,7 +233,20 @@ def init():
 
 agent = init()
 
-st.title("🖥️ Cowork")
+st.markdown(
+    f"""
+    <section class="ga-header">
+      <div class="ga-header-row">
+        <div>
+          <h1 class="ga-title">{T('app_title')}</h1>
+          <div class="ga-subtitle">{T('app_subtitle')}</div>
+        </div>
+        <div class="ga-status">{T('app_status')}</div>
+      </div>
+    </section>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.session_state.setdefault('autonomous_enabled', False)
 st.session_state.setdefault('pending_policy_confirmation', None)
@@ -68,23 +254,37 @@ st.session_state.setdefault('pending_policy_confirmation', None)
 @st.fragment
 def render_sidebar():
     st.session_state.setdefault('autonomous_enabled', False)
+    lang_labels = {'zh': '中文', 'en': 'English'}
+    current_lang = st.session_state.get('ui_lang', LANG)
+    selected_lang = st.radio(
+        T('language'),
+        ['zh', 'en'],
+        index=0 if current_lang == 'zh' else 1,
+        format_func=lang_labels.get,
+        horizontal=True,
+        key="sidebar_language_select",
+    )
+    if selected_lang != current_lang:
+        st.session_state.ui_lang = selected_lang
+        st.rerun(scope="app")
+
     llm_options = agent.list_llms()
     current_idx = agent.llm_no
     llm_labels = {idx: f"{idx}: {(name or '').strip()}" for idx, name, _ in llm_options}
-    st.caption(f"LLM Core: {llm_labels.get(current_idx, str(current_idx))}")
-    selected_idx = st.selectbox("LLM", [idx for idx, _, _ in llm_options], index=next((i for i, (idx, _, _) in enumerate(llm_options) if idx == current_idx), 0), format_func=llm_labels.get, label_visibility="collapsed", key="sidebar_llm_select")
+    st.caption(f"{T('model_core')}: {llm_labels.get(current_idx, str(current_idx))}")
+    selected_idx = st.selectbox(T('model_label'), [idx for idx, _, _ in llm_options], index=next((i for i, (idx, _, _) in enumerate(llm_options) if idx == current_idx), 0), format_func=llm_labels.get, label_visibility="collapsed", key="sidebar_llm_select")
     if selected_idx != current_idx:
         agent.next_llm(selected_idx); st.rerun(scope="fragment")
     if st.button(T('force_stop')):
-        agent.abort(); st.toast("Stop signal sended"); st.rerun()
+        agent.abort(); st.toast(T('stop_sent')); st.rerun()
     if st.button(T('reinject_tools')):
         agent.llmclient.last_tools = ''
         try:
             hist_path = os.path.join(script_dir, '..', 'assets', 'tool_usable_history.json')
             with open(hist_path, 'r', encoding='utf-8') as f: tool_hist = json.load(f)
             agent.llmclient.backend.history.extend(tool_hist)
-            st.toast(f"Tools injected")
-        except Exception as e: st.toast(f"Injected tools failed: {e}")
+            st.toast(T('tools_injected'))
+        except Exception as e: st.toast(T('tools_failed', error=e))
     if st.button(T('desktop_pet')):
         kwargs = {'creationflags': 0x08} if sys.platform == 'win32' else {}
         pet_script = os.path.join(script_dir, 'desktop_pet_v2.pyw')
@@ -104,29 +304,29 @@ def render_sidebar():
             _pet_req(f'msg={quote(chr(10).join(parts))}')
             if ctx.get('exit_reason'): _pet_req('state=idle')
         agent._turn_end_hooks['pet'] = _pet_hook
-        st.toast("Desktop pet started")
+        st.toast(T('pet_started'))
 
-    with st.expander("Audit timeline", expanded=False):
+    with st.expander(T('audit_timeline'), expanded=False):
         try:
             from safety_policy import iter_audit_events
             audit_limit = st.selectbox(
-                "Audit events",
+                T('audit_timeline'),
                 [12, 25, 50, 100],
                 index=1,
-                format_func=lambda value: f"Latest {value}",
+                format_func=lambda value: T('audit_latest', value=value),
                 label_visibility="collapsed",
                 key="audit_timeline_limit",
             )
             events = iter_audit_events(limit=audit_limit)
             names = audit_event_names(events)
             selected_names = st.multiselect(
-                "Event filter",
+                T('audit_filter'),
                 names,
-                placeholder="All event types",
+                placeholder=T('audit_filter_placeholder'),
                 label_visibility="collapsed",
                 key="audit_timeline_event_filter",
             )
-            show_details = st.checkbox("Show details", value=False, key="audit_timeline_show_details")
+            show_details = st.checkbox(T('audit_show_details'), value=False, key="audit_timeline_show_details")
             visible_events = filter_audit_events(events, selected_names)
             if visible_events:
                 for idx, event in enumerate(visible_events[:12]):
@@ -136,31 +336,30 @@ def render_sidebar():
                     if show_details:
                         st.json(audit_event_detail(event), expanded=False)
                 if len(visible_events) > 12:
-                    st.caption(f"Showing 12 of {len(visible_events)} matched events.")
+                    st.caption(T('audit_showing', shown=12, total=len(visible_events)))
             else:
-                st.caption("No matching audit events.")
+                st.caption(T('audit_no_matches'))
         except Exception as e:
-            st.caption(f"Audit unavailable: {e}")
+            st.caption(T('audit_unavailable', error=e))
     
-    if LANG == 'zh':
-        if st.button('🎯 给我找点事做'):
-            st.session_state['_inject_prompt'] = '按照自主行动的规划部分，充分分析我的情况，给我生成一批TODO，务必让我感兴趣'
-            st.rerun(scope="app")
-        st.divider()
-        if st.button("开始空闲自主行动"):
-            st.session_state.last_reply_time = int(time.time()) - 1800
+    if st.button(T('find_tasks')):
+        st.session_state['_inject_prompt'] = T('find_tasks_prompt')
+        st.rerun(scope="app")
+    st.divider()
+    if st.button(T('start_autonomous')):
+        st.session_state.last_reply_time = int(time.time()) - 1800
+        st.session_state.autonomous_enabled = True
+        st.toast(T('autonomous_started')); st.rerun(scope="app")
+    if st.session_state.autonomous_enabled:
+        if st.button(T('stop_autonomous')):
+            st.session_state.autonomous_enabled = False
+            st.toast(T('autonomous_disabled')); st.rerun(scope="app")
+        st.caption(T('autonomous_on'))
+    else:
+        if st.button(T('allow_autonomous'), type="primary"):
             st.session_state.autonomous_enabled = True
-            st.toast("已将上次回复时间设为1800秒前，自主行动已激活"); st.rerun(scope="app")
-        if st.session_state.autonomous_enabled:
-            if st.button("⏸️ 禁止自主行动"):
-                st.session_state.autonomous_enabled = False
-                st.toast("⏸️ 已禁止自主行动"); st.rerun(scope="app")
-            st.caption("🟢 自主行动运行中，会在你离开它30分钟后自动进行")
-        else:
-            if st.button("▶️ 允许自主行动", type="primary"):
-                st.session_state.autonomous_enabled = True
-                st.toast("✅ 已允许自主行动"); st.rerun(scope="app")
-            st.caption("🔴 自主行动已停止")
+            st.toast(T('autonomous_enabled')); st.rerun(scope="app")
+        st.caption(T('autonomous_off'))
 with st.sidebar: render_sidebar()
 
 def fold_turns(text):
@@ -342,7 +541,7 @@ _js_ime_fix = ("" if os.name == 'nt' else
 _embed_html(f'<script>{_js_scroll_fix};{_js_ime_fix}</script>', height=0)
 
 _injected = st.session_state.pop('_inject_prompt', None)
-prompt = st.chat_input("any task?") or _injected
+prompt = st.chat_input(T('chat_placeholder')) or _injected
 if prompt:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     cmd = (prompt or "").strip()
