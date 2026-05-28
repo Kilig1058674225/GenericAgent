@@ -12,6 +12,7 @@ try:
     from plugins.hooks import discover_and_load; discover_and_load()
 except Exception: pass
 from ga import GenericAgentHandler, smart_format, get_global_memory, format_error, consume_file
+from policy_confirmation import extract_pending_confirmation
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 def load_tool_schema(suffix=''):
@@ -149,10 +150,17 @@ class GenericAgent:
             gen = agent_runner_loop(self.llmclient, sys_prompt, raw_query, handler, TOOLS_SCHEMA, 
                                     max_turns=80, verbose=self.verbose, yield_info=True)
             try:
-                full_resp = ""; last_pos = 0; curr_turn = 0; turn_resps = []
-                for chunk in gen:
+                full_resp = ""; last_pos = 0; curr_turn = 0; turn_resps = []; exit_reason = None
+                while True:
+                    try:
+                        chunk = next(gen)
+                    except StopIteration as done:
+                        exit_reason = done.value if isinstance(done.value, dict) else None
+                        break
                     if consume_file(self.task_dir, '_stop'): self.abort() 
-                    if self.stop_sig: break
+                    if self.stop_sig:
+                        exit_reason = {'result': 'ABORTED'}
+                        break
                     if isinstance(chunk, dict) and 'turn' in chunk: 
                         curr_turn = chunk['turn']; turn_resps.append(''); continue
                     full_resp += chunk;  turn_resps[-1] += chunk
@@ -164,11 +172,20 @@ class GenericAgent:
                                                                                   'turn': curr_turn, 'outputs': turn_resps[-2:]})
                 #if '</summary>' in full_resp: full_resp = full_resp.replace('</summary>', '</summary>\n\n')
                 #if '</file_content>' in full_resp: full_resp = re.sub(r'<file_content>\s*(.*?)\s*</file_content>', r'\n````\n<file_content>\n\1\n</file_content>\n````', full_resp, flags=re.DOTALL)                
-                display_queue.put({'done': full_resp, 'source': source, 'turn': curr_turn, 'outputs': turn_resps.copy()})
+                done_item = {'done': full_resp, 'source': source, 'turn': curr_turn, 'outputs': turn_resps.copy(), 'exit_reason': exit_reason}
+                pending_confirmation = extract_pending_confirmation(exit_reason, prompt=raw_query)
+                if pending_confirmation: done_item['pending_confirmation'] = pending_confirmation
+                display_queue.put(done_item)
                 self.history = handler.history_info
             except Exception as e:
                 print(f"Backend Error: {format_error(e)}")
-                display_queue.put({'done': full_resp + f'\n```\n{format_error(e)}\n```', 'source': source, 'turn': curr_turn, 'outputs': turn_resps.copy()})
+                display_queue.put({
+                    'done': full_resp + f'\n```\n{format_error(e)}\n```',
+                    'source': source,
+                    'turn': curr_turn,
+                    'outputs': turn_resps.copy(),
+                    'exit_reason': {'result': 'ERROR', 'error': format_error(e)},
+                })
             finally:
                 if self.stop_sig: print('User aborted the task.')
                 self.is_running = self.stop_sig = False

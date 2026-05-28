@@ -19,6 +19,7 @@ import chatapp_common  # activate /continue command (monkey patches GeneraticAge
 from continue_cmd import handle_frontend_command, reset_conversation, list_sessions, extract_ui_messages
 from btw_cmd import handle_frontend_command as btw_handle_frontend
 from export_cmd import last_assistant_text, export_to_temp, wrap_for_clipboard
+from policy_confirmation import apply_confirmation_token
 
 st.set_page_config(page_title="Cowork", layout="wide")
 
@@ -29,11 +30,21 @@ I18N = {
         'force_stop': '强行停止任务',
         'reinject_tools': '重新注入工具',
         'desktop_pet': '🐱 桌面宠物',
+        'policy_confirm_title': '需要确认后继续',
+        'policy_confirm_allow': '允许一次并重试',
+        'policy_confirm_cancel': '取消本次执行',
+        'policy_confirm_retrying': '已允许一次，正在重试',
+        'policy_confirm_cancelled': '已取消本次执行',
     },
     'en': {
         'force_stop': 'Force Stop',
         'reinject_tools': 'Reinject Tools',
         'desktop_pet': '🐱 Desktop Pet',
+        'policy_confirm_title': 'Confirmation required',
+        'policy_confirm_allow': 'Allow once and retry',
+        'policy_confirm_cancel': 'Cancel this run',
+        'policy_confirm_retrying': 'Allowed once, retrying',
+        'policy_confirm_cancelled': 'Cancelled this run',
     },
 }
 def T(key): return I18N.get(LANG, I18N['zh']).get(key, key)
@@ -52,6 +63,7 @@ agent = init()
 st.title("🖥️ Cowork")
 
 st.session_state.setdefault('autonomous_enabled', False)
+st.session_state.setdefault('pending_policy_confirmation', None)
 
 @st.fragment
 def render_sidebar():
@@ -194,6 +206,32 @@ def render_segments(segments, suffix=''):
         else:
             st.markdown(seg['content'] + suffix)
 
+def render_policy_confirmation_panel():
+    pending = st.session_state.get('pending_policy_confirmation')
+    if not pending: return
+    title = T('policy_confirm_title')
+    tool = pending.get('tool_name') or '-'
+    risk = pending.get('risk') or '-'
+    reason = pending.get('reason') or pending.get('question') or ''
+    token_id = pending.get('token_id') or ''
+    st.warning(f"**{title}**\n\n`{tool}` | risk `{risk}` | token `{token_id}`\n\n{reason}")
+    col_allow, col_cancel = st.columns([1, 1])
+    with col_allow:
+        if st.button(T('policy_confirm_allow'), type="primary", key="policy_confirm_allow_once"):
+            result = apply_confirmation_token(pending)
+            if result.get("status") == "success":
+                st.session_state.pending_policy_confirmation = None
+                st.session_state['_inject_prompt'] = pending.get('prompt') or ''
+                st.toast(T('policy_confirm_retrying'))
+                st.rerun(scope="app")
+            else:
+                st.error(result.get("msg", "confirmation failed"))
+    with col_cancel:
+        if st.button(T('policy_confirm_cancel'), key="policy_confirm_cancel"):
+            st.session_state.pending_policy_confirmation = None
+            st.toast(T('policy_confirm_cancelled'))
+            st.rerun(scope="app")
+
 def agent_backend_stream(prompt=None):
     """Drain main task display_queue.
     - prompt given:  start a fresh task; new dq is kept in session_state.
@@ -201,6 +239,7 @@ def agent_backend_stream(prompt=None):
     Per-chunk progress is mirrored to session_state.partial_response so the rendered
     bubble survives reruns. No implicit agent.abort() — explicit stop is on the Stop button."""
     if prompt is not None:
+        st.session_state.pending_policy_confirmation = None
         st.session_state.display_queue = agent.put_task(prompt, source="user")
         st.session_state.partial_response = ''
     dq = st.session_state.get('display_queue')
@@ -224,6 +263,7 @@ def agent_backend_stream(prompt=None):
             if 'done' in item:
                 st.session_state.display_queue = None
                 st.session_state.partial_response = ''
+                st.session_state.pending_policy_confirmation = item.get('pending_confirmation')
                 yield item['done']; break
     finally:
         agent.abort()
@@ -262,6 +302,10 @@ for msg in st.session_state.messages:
         with slot.container():
             if msg["role"] == "assistant": render_segments(fold_turns(msg["content"]))
             else: st.markdown(msg["content"])
+
+confirmation_slot = st.empty()
+with confirmation_slot.container():
+    render_policy_confirmation_panel()
 
 # Scroll-height ghost fix: during streaming, expander open/close mid-animation can leave
 # phantom height → scrollbar long but can't scroll to bottom. Periodically detect & reflow.
@@ -371,9 +415,13 @@ if prompt:
     if hasattr(agent, '_pet_req') and not prompt.startswith('/'): agent._pet_req('state=walk')
     with st.chat_message("user"): st.markdown(prompt)
     render_main_stream(prompt)
+    with confirmation_slot.container():
+        render_policy_confirmation_panel()
 elif st.session_state.get('display_queue') is not None:
     # No new prompt but a task is mid-flight (typically a /btw rerun) — resume drain.
     render_main_stream()
+    with confirmation_slot.container():
+        render_policy_confirmation_panel()
 
 if st.session_state.autonomous_enabled:
     st.markdown(f"""<div id="last-reply-time" style="display:none">{st.session_state.get('last_reply_time', int(time.time()))}</div>""", unsafe_allow_html=True)

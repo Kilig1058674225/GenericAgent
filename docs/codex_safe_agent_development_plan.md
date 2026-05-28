@@ -52,6 +52,7 @@ Add an explicit permission layer before risky tool execution.
 - Ensure policy decisions are logged to a local audit log under ignored `temp/`.
 - Keep the first version local-only; no cloud policy service.
 - Confirmation-grade actions use a one-time `GA_POLICY_CONFIRM_TOKEN` that only matches the exact tool, policy decision, and arguments; users should not need to disable the whole policy to resume one paused action.
+- The Streamlit UI should surface pending policy confirmations with an "allow once and retry" path instead of requiring manual environment edits.
 
 Acceptance:
 
