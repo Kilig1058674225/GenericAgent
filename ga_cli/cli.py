@@ -700,7 +700,7 @@ def cmd_verify(argv=None):
 
     results = [_run_verify_step(name, cmd, timeout) for name, cmd, timeout in steps]
     try:
-        from verify_checks import scan_candidate_files_for_configured_secrets
+        from verify_checks import scan_candidate_files_for_configured_secrets, scan_candidate_files_for_likely_secrets
 
         secret_matches = scan_candidate_files_for_configured_secrets(PROJECT_DIR)
         results.append(
@@ -712,8 +712,18 @@ def cmd_verify(argv=None):
                 "stderr": json.dumps(secret_matches, ensure_ascii=True),
             }
         )
+        likely_secret_matches = scan_candidate_files_for_likely_secrets(PROJECT_DIR)
+        results.append(
+            {
+                "name": "likely secret scan",
+                "ok": not likely_secret_matches,
+                "returncode": 0 if not likely_secret_matches else 1,
+                "stdout": "" if likely_secret_matches else "no likely secrets found in git candidate files",
+                "stderr": json.dumps(likely_secret_matches, ensure_ascii=True),
+            }
+        )
     except Exception as exc:
-        results.append({"name": "configured secret scan", "ok": False, "returncode": 1, "stdout": "", "stderr": str(exc)})
+        results.append({"name": "secret scans", "ok": False, "returncode": 1, "stdout": "", "stderr": str(exc)})
 
     if parsed.json:
         print(json.dumps(results, ensure_ascii=True, indent=2))

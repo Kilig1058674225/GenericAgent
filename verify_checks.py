@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,25 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SECRET_KEY_MARKERS = ("api_key", "apikey", "secret", "token", "password", "cookie", "authorization")
+LIKELY_SECRET_PATTERNS = (
+    (
+        "secret_assignment",
+        re.compile(
+            r"(?i)\b(api[_-]?key|apikey|secret|token|password|cookie|authorization)\b"
+            r"\s*[:=]\s*['\"]([A-Za-z0-9._~+/=-]{16,})['\"]?"
+        ),
+    ),
+    (
+        "env_secret_assignment",
+        re.compile(
+            r"(?im)^\s*(?:export\s+)?[A-Za-z_]*(api[_-]?key|apikey|secret|token|password|cookie|authorization)[A-Za-z_]*"
+            r"\s*=\s*([A-Za-z0-9._~+/=-]{16,})\s*$"
+        ),
+    ),
+    ("openai_style_key", re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])")),
+    ("bearer_token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}")),
+)
+PLACEHOLDER_MARKERS = ("<your", "your-", "dummy", "placeholder", "example", "xxxxx", "redacted", "changeme")
 
 
 def _is_secret_key(key: Any) -> bool:
@@ -25,7 +45,7 @@ def _is_usable_secret(value: str) -> bool:
     lowered = text.lower()
     if not text or text == "[REDACTED]":
         return False
-    if any(marker in lowered for marker in ("<your", "your-", "dummy", "placeholder", "example")):
+    if any(marker in lowered for marker in PLACEHOLDER_MARKERS):
         return False
     return True
 
@@ -131,6 +151,58 @@ def scan_files_for_values(
     return matches
 
 
+def _line_number(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _match_secret_text(match: re.Match[str]) -> str:
+    for item in reversed(match.groups()):
+        if item:
+            return item
+    return match.group(0)
+
+
+def scan_files_for_likely_secrets(
+    files: list[Path],
+    project_dir: str | os.PathLike[str] = PROJECT_ROOT,
+) -> list[dict[str, str]]:
+    root = Path(project_dir).resolve()
+    matches: list[dict[str, str]] = []
+    seen: set[tuple[str, int, str]] = set()
+    for path in files:
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            continue
+        if b"\0" in data:
+            continue
+        text = data.decode("utf-8", errors="replace")
+        for kind, pattern in LIKELY_SECRET_PATTERNS:
+            for match in pattern.finditer(text):
+                secret_text = _match_secret_text(match)
+                if not _is_usable_secret(secret_text):
+                    continue
+                try:
+                    rel = str(Path(path).resolve().relative_to(root))
+                except ValueError:
+                    rel = str(path)
+                line = _line_number(text, match.start())
+                secret_id = hashlib.sha256(secret_text.encode("utf-8")).hexdigest()[:10]
+                key = (rel, line, secret_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                matches.append(
+                    {
+                        "path": rel,
+                        "line": str(line),
+                        "kind": kind,
+                        "secret_id": secret_id,
+                    }
+                )
+    return matches
+
+
 def scan_candidate_files_for_configured_secrets(project_dir: str | os.PathLike[str] = PROJECT_ROOT) -> list[dict[str, str]]:
     return scan_files_for_values(
         collect_configured_secret_values(),
@@ -139,9 +211,23 @@ def scan_candidate_files_for_configured_secrets(project_dir: str | os.PathLike[s
     )
 
 
+def scan_candidate_files_for_likely_secrets(project_dir: str | os.PathLike[str] = PROJECT_ROOT) -> list[dict[str, str]]:
+    return scan_files_for_likely_secrets(
+        git_candidate_files(project_dir),
+        project_dir,
+    )
+
+
 def scan_tracked_files_for_configured_secrets(project_dir: str | os.PathLike[str] = PROJECT_ROOT) -> list[dict[str, str]]:
     return scan_files_for_values(
         collect_configured_secret_values(),
+        git_tracked_files(project_dir),
+        project_dir,
+    )
+
+
+def scan_tracked_files_for_likely_secrets(project_dir: str | os.PathLike[str] = PROJECT_ROOT) -> list[dict[str, str]]:
+    return scan_files_for_likely_secrets(
         git_tracked_files(project_dir),
         project_dir,
     )

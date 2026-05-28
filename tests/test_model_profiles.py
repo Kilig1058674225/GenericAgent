@@ -10,10 +10,13 @@ from model_profiles import (
 
 class ModelProfileSummaryTests(unittest.TestCase):
     def test_profile_summary_does_not_expose_secrets(self):
+        raw_key = "sk-" + "secret1234567890"
+        raw_name_secret = "sk-" + "secret-in-name123456"
+        raw_bearer = "bearer " + "hiddenmodeltoken"
         cfg = {
-            "name": "primary sk-secret-in-name123456",
-            "model": "qwen-thinking bearer hiddenmodeltoken",
-            "apikey": "sk-secret1234567890",
+            "name": f"primary {raw_name_secret}",
+            "model": f"qwen-thinking {raw_bearer}",
+            "apikey": raw_key,
             "apibase": "https://user:pass@example.invalid/v1?api_key=hidden#frag",
             "api_mode": "responses",
         }

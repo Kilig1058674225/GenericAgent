@@ -86,10 +86,11 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertFalse(decision.blocks_execution)
 
     def test_redaction_handles_secret_keys_and_values(self):
-        raw_secret = "sk-testsecret1234567890"
+        raw_secret = "sk-" + "testsecret1234567890"
+        raw_bearer = "Bearer " + "abcdefghijklmnop"
         data = {
             "apikey": raw_secret,
-            "nested": {"header": "Authorization: Bearer abcdefghijklmnop"},
+            "nested": {"header": f"Authorization: {raw_bearer}"},
             "text": f"token={raw_secret}",
         }
 
@@ -101,7 +102,7 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertIn("[REDACTED]", rendered)
 
     def test_audit_log_is_jsonl_and_redacted(self):
-        raw_secret = "sk-auditsecret1234567890"
+        raw_secret = "sk-" + "auditsecret1234567890"
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"GA_AUDIT_DIR": tmpdir}, clear=False):
                 decision = classify_tool_call("web_scan", {"apikey": raw_secret}, handler=None)

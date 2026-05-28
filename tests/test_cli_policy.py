@@ -9,7 +9,7 @@ from ga_cli.cli import cmd_policy
 
 class CliPolicyTests(unittest.TestCase):
     def test_policy_check_json_is_redacted_and_does_not_execute(self):
-        raw_secret = "sk-policysecret1234567890"
+        raw_secret = "sk-" + "policysecret1234567890"
         out = io.StringIO()
 
         with redirect_stdout(out):

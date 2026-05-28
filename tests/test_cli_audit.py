@@ -70,7 +70,7 @@ class CliAuditTests(unittest.TestCase):
         self.assertIn("turn=2", rendered)
 
     def test_cmd_audit_json_is_redacted(self):
-        raw_secret = "sk-clisecret1234567890"
+        raw_secret = "sk-" + "clisecret1234567890"
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"GA_AUDIT_DIR": tmpdir}, clear=False):
                 write_audit_event("agent_run_start", {"apikey": raw_secret, "user_input": "hello"})
