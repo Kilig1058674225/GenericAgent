@@ -14,6 +14,16 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent
 AUDIT_DIR = PROJECT_ROOT / "temp" / "runs"
 AUDIT_EVENT_LIMIT = 1000
+PROTECTED_INTERNAL_ROOTS = (
+    PROJECT_ROOT / ".git",
+    PROJECT_ROOT / ".venv",
+    PROJECT_ROOT / ".pytest_cache",
+    PROJECT_ROOT / "__pycache__",
+    PROJECT_ROOT / "genericagent.egg-info",
+    PROJECT_ROOT / "temp" / "runs",
+    PROJECT_ROOT / "temp" / "snapshots",
+    PROJECT_ROOT / "temp" / "model_responses",
+)
 
 DECISION_ALLOW = "allow"
 DECISION_CONFIRM = "require_confirmation"
@@ -147,6 +157,22 @@ def _is_sensitive_path(path: Path | None) -> bool:
     return bool(path and SECRET_PATH_RE.search(str(path)))
 
 
+def _protected_internal_path(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    for root in PROTECTED_INTERNAL_ROOTS:
+        try:
+            resolved_root = root.resolve()
+        except Exception:
+            resolved_root = root.absolute()
+        if path == resolved_root or _is_inside(path, resolved_root):
+            try:
+                return resolved_root.relative_to(PROJECT_ROOT).as_posix()
+            except ValueError:
+                return str(resolved_root)
+    return None
+
+
 def _tool_base_dir(handler: Any | None) -> Path:
     cwd = getattr(handler, "cwd", None) if handler is not None else None
     if cwd:
@@ -188,13 +214,18 @@ def classify_tool_call(tool_name: str, args: dict[str, Any] | None, handler: Any
     path = _path_from_args(tool_name, args, _tool_base_dir(handler))
     if _is_sensitive_path(path):
         return PolicyDecision(tool_name, "credential_access", RISK_HIGH, DECISION_CONFIRM, mode, "credential-like path needs confirmation")
+    protected_internal = _protected_internal_path(path)
 
     if tool_name == "file_read":
+        if protected_internal:
+            return PolicyDecision(tool_name, "internal_state", RISK_HIGH, DECISION_CONFIRM, mode, f"read of protected internal path: {protected_internal}")
         if path and _is_allowed_workspace_path(path):
             return PolicyDecision(tool_name, "file_read", RISK_LOW, DECISION_ALLOW, mode, "read inside local workspace")
         return PolicyDecision(tool_name, "file_read", RISK_MEDIUM, DECISION_CONFIRM, mode, "read outside local workspace")
 
     if tool_name in {"file_write", "file_patch"}:
+        if protected_internal:
+            return PolicyDecision(tool_name, "internal_state", RISK_CRITICAL, DECISION_BLOCK, mode, f"write to protected internal path: {protected_internal}")
         if path and _is_allowed_workspace_path(path):
             return PolicyDecision(tool_name, "file_write", RISK_MEDIUM, DECISION_ALLOW, mode, "write inside local workspace")
         return PolicyDecision(tool_name, "file_write", RISK_HIGH, DECISION_CONFIRM, mode, "write outside local workspace")

@@ -50,6 +50,24 @@ class SafetyPolicyTests(unittest.TestCase):
         self.assertTrue(decision.blocks_execution)
         self.assertTrue(decision.needs_confirmation)
 
+    def test_protected_internal_read_requires_confirmation(self):
+        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_ENFORCE}, clear=False):
+            decision = classify_tool_call("file_read", {"path": ".git/config"}, handler=DummyHandler(safety_policy.PROJECT_ROOT))
+
+        self.assertEqual(decision.category, "internal_state")
+        self.assertEqual(decision.decision, DECISION_CONFIRM)
+        self.assertEqual(decision.risk, "high")
+        self.assertTrue(decision.blocks_execution)
+
+    def test_protected_internal_write_is_blocked_by_default(self):
+        with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_OBSERVE}, clear=False):
+            decision = classify_tool_call("file_write", {"path": "temp/runs/audit-20260101.jsonl"}, handler=DummyHandler(safety_policy.PROJECT_ROOT))
+
+        self.assertEqual(decision.category, "internal_state")
+        self.assertEqual(decision.decision, DECISION_BLOCK)
+        self.assertEqual(decision.risk, "critical")
+        self.assertTrue(decision.blocks_execution)
+
     def test_payment_like_action_is_blocked_by_default_even_in_observe(self):
         with patch.dict(os.environ, {"GA_POLICY_MODE": MODE_OBSERVE}, clear=False):
             decision = classify_tool_call("web_execute_js", {"script": "click checkout and pay"}, handler=None)
