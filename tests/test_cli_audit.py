@@ -33,6 +33,32 @@ class CliAuditTests(unittest.TestCase):
             },
         )
 
+    def test_audit_view_summarizes_confirmation_and_snapshots(self):
+        policy = {
+            "event": "policy_decision",
+            "tool_name": "code_run",
+            "decision": "require_confirmation",
+            "risk": "high",
+            "executed": True,
+            "extra": {"confirmation": {"status": "approved"}},
+        }
+        snapshot = {
+            "event": "file_snapshot",
+            "tool_name": "file_write",
+            "target_rel": "notes.txt",
+            "existed": True,
+        }
+        restored = {
+            "event": "file_snapshot_restore",
+            "action": "restored",
+            "snapshot_id": "snap-1",
+            "target_path": "notes.txt",
+        }
+
+        self.assertEqual(summarize_audit_event(policy), "code_run require_confirmation high executed=True confirmation=approved")
+        self.assertEqual(summarize_audit_event(snapshot), "file_write notes.txt existed=True")
+        self.assertEqual(summarize_audit_event(restored), "restored snap-1 -> notes.txt")
+
     def test_audit_view_filters_and_redacts_detail_payloads(self):
         raw_secret = "detail-secret-placeholder"
         events = [

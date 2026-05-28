@@ -42,6 +42,10 @@ def summarize_audit_event(event: dict[str, Any]) -> str:
         ]
         if event.get("executed") is not None:
             parts.append(f"executed={event.get('executed')}")
+        extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+        confirmation = extra.get("confirmation") if isinstance(extra.get("confirmation"), dict) else {}
+        if confirmation.get("status"):
+            parts.append(f"confirmation={confirmation.get('status')}")
         return " ".join(str(part) for part in parts if part != "")
     if name in {"tool_start", "tool_end"}:
         parts = [event.get("tool_name", "?"), f"turn={event.get('turn', '?')}"]
@@ -87,10 +91,15 @@ def summarize_audit_event(event: dict[str, Any]) -> str:
         if event.get("exit_reason"):
             parts.append(f"exit={event.get('exit_reason')}")
         return " ".join(parts)
-    if name == "snapshot_created":
-        return f"{event.get('tool_name', '?')} {event.get('path', '?')}"
-    if name == "snapshot_restored":
-        return f"{event.get('snapshot_id', '?')} -> {event.get('target_path', '?')}"
+    if name in {"snapshot_created", "file_snapshot"}:
+        target = event.get("target_rel") or event.get("path") or event.get("target_path") or "?"
+        parts = [event.get("tool_name", "?"), target]
+        if event.get("existed") is not None:
+            parts.append(f"existed={event.get('existed')}")
+        return " ".join(str(part) for part in parts)
+    if name in {"snapshot_restored", "file_snapshot_restore"}:
+        action = event.get("action", "restored")
+        return f"{action} {event.get('snapshot_id', '?')} -> {event.get('target_path', '?')}"
     if name == "audit_parse_error":
         return f"{event.get('path', '?')} {_clip(event.get('line'), 60)}"
     return _clip(event.get("message") or event.get("summary") or "")
